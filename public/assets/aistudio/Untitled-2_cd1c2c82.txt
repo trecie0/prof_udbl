@@ -1,0 +1,656 @@
+CONTEXTE DU PROJET : APPLICATION MOBILE UDBL AVEC ASSISTANT IA "HARMONI"
+
+Objectif général
+----------------
+L'application est une plateforme mobile destinée aux étudiants de l'Université Don Bosco de Lubumbashi (UDBL), notamment du niveau L1 Informatique et Ingénierie. Elle contient :
+- un emploi du temps ;
+- des matières et des syllabus ;
+- des notes personnelles ;
+- un agenda ;
+- des présences ;
+- des annonces ;
+- un assistant conversationnel nommé Harmoni ;
+- un mode vocal nommé Moni 1.0 Live.
+
+La partie IA est composée d'une application Django sur le serveur et d'une interface React Native / Expo sur le mobile ou le navigateur web.
+
+ARCHITECTURE GÉNÉRALE
+---------------------
+
+Mobile / navigateur
+        |
+        | API REST JSON
+        | Cookies / CSRF
+        v
+Backend Django
+        |
+        +--> Construction du contexte étudiant
+        +--> Recherche locale dans les documents indexés
+        +--> Génération via l'API Gemini
+        |
+        v
+Gemini REST API ou Gemini Live WebSocket
+
+Technologies principales
+------------------------
+Backend :
+- Python
+- Django
+- SQLite en développement
+- PostgreSQL sur Render en production
+- pypdf pour lire les PDF
+- python standard library pour les documents DOCX, TXT et MD
+- urllib pour appeler les API Google Gemini
+- django-cors-headers
+- django-storages
+- Gunicorn
+- environnements Render
+
+Frontend :
+- React Native
+- Expo
+- react-native-audio-api pour le microphone et la lecture audio
+- Expo Document Picker
+- API Fetch native
+- Web Audio API sur navigateur web
+- WebSocket pour Gemini Live
+- stockage local hors ligne
+
+STRUCTURE DES FICHIERS IA
+-------------------------
+
+Backend :
+- backend/assistant/views.py
+  Point d'entrée principal de l'IA.
+  Contient le système prompt, les appels Gemini, le contexte utilisateur,
+  le streaming conversationnel texte et la création des jetons Gemini Live.
+
+- backend/assistant/context_builder.py
+  Assemble les données réelles de l'étudiant et de l'université.
+
+- backend/assistant/document_indexing.py
+  Lit les PDF, DOCX, TXT et MD.
+  Découpe les textes en passages, puis les stocke dans la base.
+
+- backend/assistant/retrieval.py
+  Recherche les passages les plus pertinents dans les documents indexés.
+
+- backend/assistant/models.py
+  Définit TrainingDocument et TrainingChunk.
+
+- backend/assistant/urls.py
+  Enregistre les routes API.
+
+- backend/assistant/tests.py
+  Tests Django du contexte, du RAG, des appels Gemini et du fallback.
+
+- backend/assistant/management/commands/index_harmoni_documents.py
+  Commande Django permettant d'indexer les syllabus.
+
+Frontend :
+- frontend/src/screens/assistant.js
+  Interface complète du chat, historique, pièces jointes, modèle, historique hors ligne et mode vocal.
+
+- frontend/src/geminiLiveSession.js
+  Gestion du microphone, WebSocket, flux PCM, lecture audio et transcriptions Live.
+
+- frontend/src/geminiLiveMessage.js
+  Analyse des messages WebSocket Gemini Live.
+
+- frontend/src/api.js
+  Client HTTP partagé, gestion du timeout, CSRF et cookies.
+
+ROUTES API
+----------
+
+POST /api/assistant/chat/
+Demande une réponse textuelle à Harmoni.
+
+Accepte :
+- messages : historique de la conversation ;
+- prompt : nouveau message ;
+- attachment : pièce jointe optionnelle ;
+- model : modèle Gemini demandé ;
+- client_context : date, heure, nom, matricule, groupe, notes locales et tâches locales ;
+- web_search : demande d'activer la recherche Web.
+
+Réponse :
+- reply : texte de la réponse ;
+- sources : sources Web éventuellement trouvées ;
+- search_entry_point_html : contenu HTML de Google Search ;
+- web_search_unavailable : indique si le fallback hors recherche a été utilisé ;
+- erreur : message d'erreur HTTP.
+
+POST /api/assistant/live-token/
+Nécessite que l'étudiant soit connecté et actif.
+
+Rôle :
+- vérifie l'authentification ;
+- construit le contexte étudiant ;
+- demande à Google un jeton temporaire Gemini Live ;
+- renvoie le jeton au client ;
+- n'envoie jamais la clé API Gemini au navigateur ou au mobile.
+
+Le jeton expire après environ 30 minutes et dispose d'un délai séparé de nouvelle session.
+
+ENDPOINTS CONNUS DU REST BACKEND
+--------------------------------
+- /api/auth/
+- /api/annonces/
+- /api/agenda/
+- /api/notes/
+- /api/assistant/
+
+Le backend initialise CORS et les cookies CSRF. Le frontend récupère le jeton CSRF avant les requêtes POST.
+
+IDENTIFICATION ET CONTEXTE UTILISATEUR
+--------------------------------------
+
+Le backend utilise l'utilisateur Django authentifié lorsqu'il existe.
+
+Si le client fournit un contexte temporaire contenant un matricule, le backend peut aussi retrouver un utilisateur actif correspondant.
+
+Le contexte envoyé à Gemini contient :
+- date réelle du client ;
+- jour de la semaine ;
+- heure actuelle ;
+- nom de l'étudiant ;
+- matricule ;
+- groupe ;
+- établissement ;
+- niveau L1 Informatique & Ingénierie ;
+- semaine actuelle ;
+- semaines enregistrées depuis la semaine 1 ;
+- emploi du temps ;
+- cours ;
+- enseignants ;
+- créneaux ;
+- marqueurs [AUJOURD'HUI], [DEMAIN] et [HIER] ;
+- notes personnelles ;
+- tâches personnelles ;
+- annonces ;
+- liste des matières ;
+- syllabus disponibles ;
+- présences aux cours.
+
+DONNÉES DE CONTEXTE
+-------------------
+
+1. Temps réel
+------------
+La date et l'heure peuvent venir du client. Le serveur recherche la Semaine contenant cette date. Il recherche ensuite la semaine 1 de l'année universitaire active et conserve seulement les semaines allant de cette semaine 1 jusqu'à la semaine actuelle.
+
+Cela évite de considérer automatiquement la première semaine de l'application comme la semaine actuelle.
+
+2. Emploi du temps
+------------------
+App source : application Horaire.
+
+Modèles principaux :
+- Semaine
+- Jour
+- Jours
+- HeureSeance
+- Cours
+- GroupeCours
+- seance
+- CoursPdf
+
+Une séance contient :
+- matière ;
+- enseignant ;
+- date ;
+- début ;
+- fin ;
+- heure de séance ;
+- jour ;
+- semaine ;
+- groupe.
+
+3. Notes personnelles
+---------------------
+App source : Notes.
+
+Le frontend peut transmettre les 15 ou 20 notes locales les plus pertinentes. Sinon, le backend lit les notes directement depuis Django.
+
+Chaque note contient :
+- titre ;
+- contenu ;
+- matière ;
+- date de modification ;
+- propriétaire étudiant.
+
+Le HTML des notes peut être converti en texte simple avant l'envoi à Gemini.
+
+4. Agenda
+---------
+App source : agenda.
+
+Le frontend peut transmettre les tâches des 14 jours autour de la date actuelle. Le backend peut aussi lire les tâches Django.
+
+Chaque tâche contient :
+- titre ;
+- date ;
+- heure de début ;
+- heure de fin ;
+- matière ;
+- état terminé ou à faire ;
+- indicateur supprimé.
+
+5. Matières et documents
+------------------------
+L'application contient les cours, leurs professeurs, leurs crédits et leur volume horaire. Les documents PDF sont associés à chaque cours.
+
+Les supports actuels peuvent notamment être :
+- Algèbre L1 ;
+- Recherche documentaire ;
+- Logique formelle ;
+- Programmation et algorithmes ;
+- Éducation à la citoyenneté.
+
+6. Annonces
+-----------
+Le backend transmet les quatre dernières annonces publiées.
+
+SYSTEM PROMPT
+-------------
+
+Harmoni utilise un système prompt adaptatif.
+
+Comportements :
+- discussions générales : réponse naturelle et directe ;
+- programmation, sciences, rédaction, culture : répond comme une IA générale ;
+- questions universitaires : utilise les données réelles ;
+- emploi du temps : ne pas inventer ;
+- notes : appuyer les réponses sur les notes et compléter pédagogiquement ;
+- agenda : résumer les tâches ;
+- pas d'année universitaire précédente ;
+- ne pas mentionner l'université dans une discussion générale ;
+- ne pas prétendre avoir vérifié le Web lorsque la recherche est désactivée ;
+- réponses en français ;
+- utiliser du Markdown simple ;
+- mots importants en gras ;
+- garder une continuité dans la conversation.
+
+Le prompt vocal impose notamment :
+- réponse exclusivement en français ;
+- expression naturelle ;
+- pas de Markdown complexe ;
+- pas de listes difficiles à prononcer ;
+- réponse adaptée à la lecture vocale.
+
+La clé GEMINI_API_KEY est une variable d'environnement du backend. Elle ne doit jamais être renvoyée au frontend.
+
+MODE TEXTE
+----------
+
+Le mobile construit l'historique complet à partir des messages du React state.
+
+Étapes :
+1. L'utilisateur saisit un message.
+2. Une pièce jointe peut être ajoutée.
+3. Le frontend constitue un tableau messages contenant les rôles user/model.
+4. Il ajoute la date locale, les notes locales et les tâches locales.
+5. Il appelle POST /api/assistant/chat/.
+6. Django convertit les messages au format Gemini :
+   - user → role "user" ;
+   - model ou assistant → role "model".
+7. Django ajoute les pièces jointes sous forme d'inlineData base64.
+8. Django construit le contexte étudiant.
+9. Django récupère les passages de cours pertinents.
+10. Django appelle Gemini.
+11. Le backend renvoie reply et sources éventuelles.
+12. Le mobile affiche la réponse dans son interface.
+
+Gestion des pièces jointes
+--------------------------
+Le frontend accepte :
+- images ;
+- PDF ;
+- autres fichiers ;
+- syllabus UDBL prédéfinis.
+
+Pour les fichiers choisis sur l'appareil :
+- les données sont lues ;
+- converties en base64 ;
+- accompagnées du MIME type ;
+- envoyées au backend.
+
+Les syllabi officiels peuvent être associés par cours sans envoyer le contenu PDF local. Ils servent surtout de repère pour que l'IA sache quel syllabus est connecté.
+
+Des pièces jointes PDF/DOCX ne sont pas complètement téléchargées dynamiquement dans le backend. Elles peuvent être envoyées directement à Gemini en inlineData si elles sont présentes dans la requête mobile.
+
+Des documents officiels stockés sur le serveur sont indexés séparément dans la base RAG.
+
+RAG LOCAL
+---------
+
+Modèles Django
+--------------
+
+TrainingDocument :
+- source : relation unique vers CoursPdf ;
+- status : pending, indexed ou failed ;
+- checksum SHA-256 ;
+- page_count ;
+- error ;
+- indexed_at ;
+- updated_at.
+
+TrainingChunk :
+- document ;
+- number ;
+- page_number ;
+- content ;
+- search_text.
+
+Un document n'est réindexé que lorsque son contenu change, sauf si une réindexation forcée est demandée.
+
+Formats pris en charge
+----------------------
+- PDF : extraction page par page avec pypdf ;
+- DOCX : extraction des balises XML textuelles ;
+- TXT : UTF-8 ;
+- MD : UTF-8.
+
+Limites :
+- fichier maximum : 50 Mo ;
+- PDF protégé par mot de passe : rejeté ;
+- PDF scanné sans texte : rejeté ;
+- OCR non utilisé ;
+- format non supporté : rejeté.
+
+Découpage
+---------
+- taille maximale : 1800 caractères ;
+- chevauchement : 250 caractères ;
+- découpage au niveau des espaces ;
+- nombre de page conservé pour les PDF ;
+- création des passages numérotés ;
+- normalisation sans accents pour la recherche ;
+- recherche insensible aux accents et à la casse.
+
+Commande d'indexation
+---------------------
+python manage.py index_harmoni_documents
+
+Options :
+- --course-pdf-id
+- --force
+- --pending-only
+- --continue-on-error
+
+Le stockage peut être effectué sur disque ou via django-storages avec S3 selon la configuration.
+
+Recherche documentaire
+-----------------------
+1. Extraire les mots de la question.
+2. Supprimer les mots vides français courants.
+3. Normaliser la recherche.
+4. Construire une requête OR sur search_text.
+5. Rechercher maximum 500 passages candidats.
+6. Compter les occurrences des termes dans chaque passage.
+7. Classer les passages.
+8. Limiter à cinq passages.
+9. Limiter à deux passages par document.
+10. Limiter le total à environ 8000 caractères.
+11. Renvoyer les passages avec matière, titre et numéro de page.
+
+Cette approche est un RAG lexicale simple. Elle n'utilise pas d'embeddings vectoriels ni de base vectorielle. La sélection repose sur des termes normalisés et un score de fréquence.
+
+FENÊTRE GLISSANTE DU CONTEXTE
+-----------------------------
+
+Le backend estime approximativement les tokens :
+- texte : nombre de caractères / 3 ;
+- inlineData : estimation de taille base64 ;
+- tour de conversation : ajout de cinq tokens puis ajout des parts ;
+- budget maximal : 500 000 tokens ;
+- réserve interne : 4096 tokens ;
+- les anciens messages peuvent être retirés ;
+- si le premier message restant n'est pas user, celui-ci est supprimé ;
+- si aucun message ne peut être ajouté, l'historique complet est conservé.
+
+Le frontend conserve au maximum 50 messages par conversation lors de la sauvegarde locale.
+
+MÉMOIRE
+-------
+
+Il existe deux niveaux de mémoire :
+
+Mémoire côté navigateur/mobile :
+- maximum 30 conversations hors ligne ;
+- maximum 50 messages sauvegardés par conversation ;
+- stockage sous assistant/conversations ;
+- historique restauré au démarrage ;
+- stockage lié à l'utilisateur ;
+- nouvelle discussion avec message de bienvenue ;
+- suppression de conversation disponible ;
+- la pièce jointe originale n'est pas entièrement sauvegardée dans l'historique hors ligne ;
+- seuls les métadonnées et le MIME type sont conservés.
+
+Mémoire conversationnelle envoyée à Gemini :
+- historique présent dans messages ;
+- maintenu uniquement dans le contexte de la requête ;
+- aucune table backend dédiée à l'historique des chats ;
+- Gemini reçoit les anciens tours dans contents ;
+- une nouvelle session peut être créée côté mobile ;
+- pour les appels vocaux, la mémoire est gérée directement par Gemini Live pendant la session.
+
+APPELS GEMINI TEXTE
+-------------------
+
+La constante LIVE_MODEL est gemini-3.8-live.
+
+Les modèles texte configurés sont :
+- gemini-3.5-flash-lite ;
+- gemini-3.1-flash-lite ;
+- gemini-flash-lite-latest.
+
+Le frontend affiche principalement :
+- Harmoni 1.1 Flash : gemini-3.5-flash-lite ;
+- Harmoni 1.0 Flash : gemini-3.1-flash-lite ;
+- Moni 1.0 Live : gemini-3.8-live.
+
+Modèle demandé :
+- si l'utilisateur choisit un modèle texte autorisé, il devient premier dans la liste ;
+- les autres modèles sont utilisés comme fallback ;
+- une requête échoue après avoir tenté tous les modèles disponibles.
+
+Configuration des appels :
+- temperature : 0.7 ;
+- topP : 0.95 ;
+- maxOutputTokens : 8192 ;
+- timeout : 20 secondes pour les modèles légers ;
+- timeout plus long pour les modèles Pro ou 2.5 si présents ;
+- User-Agent : UDBL-Assistant/1.0.
+
+API REST :
+POST https://generativelanguage.googleapis.com/v1beta/models/{modele}:generateContent
+
+Format :
+- contents ;
+- systemInstruction ;
+- generationConfig ;
+- tools Google Search facultatifs.
+
+Compatibilité Gemma :
+- les instructions systèmes sont ajoutées au premier utilisateur ;
+- les autres modèles utilisent systemInstruction.
+
+RECHERCHE WEB
+-------------
+
+La recherche est désactivée dans le frontend via WEB_SEARCH_ENABLED = false.
+
+Le backend possède aussi WEB_SEARCH_ENABLED = false.
+
+Même si le frontend envoie web_search=true, le backend reste désactivé tant que cette constante n'est pas modifiée.
+
+Si elle est activée :
+- Gemini reçoit Google Search comme outil ;
+- les métadonnées grounding sont analysées ;
+- seules les URLs HTTP ou HTTPS sont conservées ;
+- les sources dupliquées sont retirées ;
+- searchEntryPointHtml est retourné au mobile ;
+- si Google Search échoue avec HTTP 400, 403 ou 429, le backend tente sans outil ;
+- dans ce cas le système prompt avertit que la recherche n'est pas disponible ;
+- web_search_unavailable est renvoyé au frontend.
+
+MODE VOCAL GEMINI LIVE
+----------------------
+
+Processus :
+1. La mobile vérifie que l'utilisateur possède un matricule.
+2. Elle prépare le microphone.
+3. Elle obtient le jeton temporaire depuis /live-token/.
+4. Elle ouvre une WebSocket Gemini Live.
+5. Gemini reçoit le setup complet.
+6. Le microphone est converti en PCM 16 bits.
+7. Les paquets audio sont envoyés toutes les fractions de seconde.
+8. Gemini renvoie l'audio PCM 24 kHz.
+9. L'audio est joué dans un buffer AudioContext.
+10. Les transcriptions utilisateur et modèle mettent à jour l'interface.
+11. Les tours terminés permettent de finaliser les transcriptions.
+
+Formats audio :
+- entrée : 16 kHz ;
+- sortie : 24 kHz ;
+- audio brut : PCM 16 bits ;
+- encodage réseau : base64 ;
+- mono : un seul canal ;
+- web : ScriptProcessor ;
+- React Native : react-native-audio-api.
+
+Permissions :
+- iOS : playAndRecord ;
+- Android : microphone + voice communication ;
+- Web : HTTPS recommandé ;
+- l'utilisateur doit autoriser l'enregistrement ;
+- les ressources audio sont nettoyées en cas d'erreur ou fermeture.
+
+Connexion WebSocket :
+wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained
+
+Authentification :
+- access_token temporaire provenant du backend ;
+- pas de clé API dans le code mobile ;
+- timeout de connexion : 20 secondes ;
+- setup audio complet demandé après ouverture ;
+- status UI : idle, connecting, connected ou error.
+
+Transcriptions Live :
+- input transcription final ;
+- interim input transcription ;
+- output transcription ;
+- merge intelligent des transcriptions intermédiaires ;
+- mise à jour des bulles vocales ;
+- extraction des sources Google Search Grounding ;
+- nettoyage lors du changement de tour.
+
+GESTION DES ERREURS
+-------------------
+
+Backend :
+- JSON invalide : HTTP 400 ;
+- message vide : HTTP 400 ;
+- non authentifié pour live : HTTP 401 ;
+- clé API absente : HTTP 503 ;
+- erreur modèle : HTTP 503 ;
+- Gemini ne renvoie aucun texte : RuntimeError ;
+- les erreurs sont journalisées ;
+- aucune clé API n'est révélée ;
+- les détails HTTP Live peuvent être tronqués et masqués.
+
+Frontend :
+- timeout texte : 38 secondes ;
+- deux tentatives sauf certaines erreurs HTTP ;
+- timeout Live token : 15 secondes ;
+- timeout d'ouverture WebSocket : 20 secondes ;
+- erreurs réseau affichées à l'utilisateur ;
+- nettoyage des sessions Live en cas d'échec ;
+- conversation hors ligne non effacée automatiquement.
+
+Sécurité
+--------
+- clé Gemini côté serveur ;
+- CSRF pour les requêtes POST ;
+- authentification Django pour Live ;
+- CORS limité ;
+- cookies avec credentials include ;
+- clé Live temporaire limitée dans le temps ;
+- URLs de grounding limitées à HTTP/HTTPS ;
+- texte des documents explicitement présenté comme référence ;
+- instructions des documents considérées comme non fiables pour modifier le comportement de l'IA ;
+- données personnelles ajoutées au contexte uniquement pour les requêtes liées à l'étudiant ;
+- pas de journalisation explicite du contenu complet des chats dans la base.
+
+LIMITES ACTUELLES
+-----------------
+
+- pas de base vectorielle ;
+- pas d'embeddings ;
+- pas d'historique IA stocké côté serveur ;
+- pas de streaming texte ;
+- pas de mémoire persistante serveur ;
+- pas d'OCR ;
+- pas d'indexation automatique à l'upload ;
+- recherche Web désactivée ;
+- RAG basé sur des mots-clés ;
+- max 5 passages ;
+- une partie du contexte utilisateur provient du client ;
+- historique local limité à 30 conversations ;
+- historique d'une conversation limité à 50 messages lors de la sauvegarde ;
+- les noms exacts des modèles Gemini doivent être confirmés auprès de Google ;
+- gemini-3.8-live doit être vérifié comme identifiant Live valide ;
+- aucune limite explicite côté backend du nombre de pièces jointes ;
+- pas de token budget strict côté frontend ;
+- pas de stockage des conversations côté serveur ;
+- pas de mode hors ligne pour appeler Gemini ;
+- la persistance hors ligne reste locale au mobile.
+
+RÉSULTATS ATTENDUS POUR UNE ÉVOLUTION
+-------------------------------------
+
+Gemini peut être utilisé pour comprendre ou modifier cette architecture. Toute modification proposée devrait respecter les éléments suivants :
+
+- garder la clé Gemini côté Django ;
+- conserver l'authentification de Live ;
+- garder le système prompt Harmoni ;
+- ne pas mélanger les données universitaires avec les conversations générales ;
+- éviter toute fabrication d'emploi du temps ;
+- utiliser les extraits RAG comme sources factuelles ;
+- conserver les noms de routes existants ;
+- maintenir la compatibilité React Native et navigateur web ;
+- préserver le stockage hors ligne ;
+- améliorer éventuellement le RAG avec embeddings seulement si cela reste compatible avec SQLite/PostgreSQL ;
+- vérifier que les noms de modèles Gemini sont disponibles avant modification ;
+- conserver le fallback entre modèles ;
+- conserver le fallback sans recherche Web ;
+- nettoyer les ressources microphone/audio ;
+- ne pas envoyer la clé API au frontend.
+
+RÉSUMÉ FONCTIONNEL
+------------------
+
+Harmoni est un assistant Django/React Native basé sur Gemini. Il combine :
+- conversation générale ;
+- contexte universitaire personnalisé ;
+- emploi du temps ;
+- notes ;
+- agenda ;
+- annonces ;
+- matières ;
+- syllabus ;
+- pièces jointes ;
+- RAG documentaire ;
+- historique hors ligne ;
+- recherche Web potentielle ;
+- appel vocal temps réel Gemini Live ;
+- transcription vocale ;
+- synthèse vocale ;
+- fallback automatique des modèles ;
+- gestion des erreurs ;
+- sécurité basée sur CSRF, cookies et authentification.
+
+Son fonctionnement central est : l'application assemble des données personnelles et universitaires côté backend, ajoute les extraits des supports indexés, construit un prompt système adapté, envoie le tout à Gemini, puis affiche la réponse textuelle ou vocale au sein de la conversation.

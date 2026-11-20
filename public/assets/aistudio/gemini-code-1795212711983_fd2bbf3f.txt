@@ -1,0 +1,22 @@
+Crée une application web complète en React (Vite) + Django (Django REST Framework) intitulée « Professeur au Tableau Live » qui connecte la Gemini Multimodal Live API en temps réel à un panneau d'affichage pédagogique structuré (blocs d'étapes, calculs, schémas/relations, code, synthèse) plus lisible qu'un simple canvas brut.
+
+EXIGENCES FONCTIONNELLES ET TECHNIQUES :
+1. Backend Django + DRF :
+   - Modèles `LessonSession` et `BoardStep` (step_number, step_type, title, content, highlight, created_at) pour sauvegarder les séances et les étapes affichées au tableau.
+   - Endpoints REST :
+     * `GET /api/live-config/` : retourne le modèle Live configuré, l'instruction système pédagogique (« Professeur au tableau »), la déclaration de fonction `update_board` et la clé API si définie côté serveur (`GEMINI_API_KEY`).
+     * `GET / POST /api/sessions/` : lister ou créer une séance de cours.
+     * `GET / DELETE /api/sessions/<uuid:session_id>/` : récupérer ou supprimer une séance.
+     * `POST /api/sessions/<uuid:session_id>/steps/` : enregistrer/mettre à jour une étape et désactiver `highlight` sur les étapes précédentes si la nouvelle est active.
+     * `POST /api/sessions/<uuid:session_id>/clear/` : vider les étapes d'une séance.
+
+2. Connexion Gemini Multimodal Live API (WebSocket `BidiGenerateContent`) côté React :
+   - Ouvrir la session Live avec `setup` (modèle, `responseModalities: ["AUDIO", "TEXT"]`, voix, `systemInstruction` et `tools` contenant `update_board`).
+   - Capturer le microphone utilisateur en PCM 16 kHz mono (`16000 Hz`) et envoyer les chunks audio en base64 via `realtimeInput.mediaChunks`.
+   - Recevoir et jouer l'audio PCM 24 kHz (`24000 Hz`) retourné par le modèle via Web Audio API, et gérer `interrupted` pour couper l'audio en cours si l'utilisateur parle.
+   - Intercepter `toolCall.functionCalls` pour `update_board` (`step_number`, `type`, `title`, `content`, `highlight`), mettre à jour instantanément le panneau « Tableau » en React, persister l'étape côté Django et renvoyer `toolResponse`.
+   - Permettre aussi l'envoi d'une consigne texte rapide (ex. « Calcule-moi 1 + 2 étape par étape ») et un bouton de test visuel local.
+
+3. Interface React :
+   - Panneau de contrôle à gauche : clé API Gemini (pré-remplie si fournie par Django/env), nom du modèle Live, boutons « Connecter Live », « Parler au micro » / « Couper le micro », formulaire de test de consigne et bouton de simulation.
+   - Panneau « Tableau du Professeur » à droite : affichage chronologique des étapes avec badge d'étape, type, mise en évidence (`En cours`) de l'étape active, rendu soigné du texte/calculs/code et bouton « Effacer le tableau ».

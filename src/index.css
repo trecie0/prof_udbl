@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --paper-bg: #F6F3EC;
+    --paper-surface: #FFFFFF;
+    --paper-border: #E2DDD2;
+    --paper-ink: #1C1917;
+    --paper-muted: #57534E;
+    --board-bg: #FCFBF7;
+    --board-frame: #D5C8B4;
+    --chalk-black: #1C1917;
+    --chalk-blue: #1D4ED8;
+    --chalk-green: #15803D;
+    --chalk-red: #BE123C;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: var(--paper-bg);
+    color: var(--paper-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.font-display,
+.font-handwriting {
+  font-family: 'Kalam', 'Plus Jakarta Sans', cursive, sans-serif;
+}
+
+.font-mono-code {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.whiteboard-surface {
+  background-color: #FCFBF7;
+  background-image:
+    linear-gradient(to right, rgba(28, 25, 23, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(28, 25, 23, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.9), rgba(246, 243, 235, 0.55));
+  background-size: 28px 28px, 28px 28px, 100% 100%;
+}
+
+.whiteboard-surface .katex {
+  color: #1C1917;
+  font-size: 1.12em;
+}
+
+.whiteboard-surface .katex-display {
+  margin: 0.45rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2rem 0;
+}
+
+.chalk-underline {
+  background-image: linear-gradient(
+    to right,
+    rgba(28, 25, 23, 0.25) 0%,
+    rgba(28, 25, 23, 0.65) 35%,
+    rgba(28, 25, 23, 0.45) 75%,
+    rgba(28, 25, 23, 0.15) 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 100% 2px;
+  background-position: 0 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Professeur au Tableau Live",
+  "description": "Tuteur vocal temps réel propulsé par Gemini Live API relié à un tableau pédagogique structuré et persistant.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
