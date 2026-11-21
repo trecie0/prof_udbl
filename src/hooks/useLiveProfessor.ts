@@ -10,7 +10,6 @@ interface ConnectOverrides {
   sessionId?: string;
   courseId?: string | null;
   moduleId?: string | null;
-  playbackSpeed?: number;
 }
 
 interface UseLiveProfessorOptions {
@@ -19,7 +18,6 @@ interface UseLiveProfessorOptions {
   moduleId?: string | null;
   model: string;
   voice: string;
-  playbackSpeed: number;
   onBoardStepsUpdated: (steps: BoardStep[]) => void;
   onPointerMoved?: (pointer: BoardPointer) => void;
   onTeacherSpeech?: (chunk: string, fullTurnText: string) => void;
@@ -78,7 +76,6 @@ export function useLiveProfessor({
   moduleId,
   model,
   voice,
-  playbackSpeed,
   onBoardStepsUpdated,
   onPointerMoved,
   onTeacherSpeech,
@@ -264,7 +261,6 @@ export function useLiveProfessor({
         normalized.courseId !== undefined ? normalized.courseId : courseId ?? null;
       const targetModuleId =
         normalized.moduleId !== undefined ? normalized.moduleId : moduleId ?? null;
-      const targetPlaybackSpeed = normalized.playbackSpeed ?? playbackSpeed;
 
       if (!targetSessionId) {
         setErrorMessage('Aucune séance sélectionnée.');
@@ -290,7 +286,6 @@ export function useLiveProfessor({
           sessionId: targetSessionId,
           model,
           voice,
-          playbackSpeed: String(targetPlaybackSpeed),
         });
         if (targetCourseId) query.set('courseId', targetCourseId);
         if (targetModuleId) query.set('moduleId', targetModuleId);
@@ -410,7 +405,6 @@ export function useLiveProfessor({
       model,
       moduleId,
       playPcm24kChunk,
-      playbackSpeed,
       sessionId,
       stopAudioPlayback,
       stopMicrophone,

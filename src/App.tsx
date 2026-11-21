@@ -303,8 +303,6 @@ export default function App() {
   const [selectedVoice, setSelectedVoice] = useState('Charon');
   const [isLoadingBoard, setIsLoadingBoard] = useState(true);
   const [isSimulating, setIsSimulating] = useState(false);
-  const [playbackSpeed, setPlaybackSpeed] = useState(0.75);
-  const [isBoardPaused, setIsBoardPaused] = useState(false);
 
   const [cloudUser, setCloudUser] = useState<User | null>(null);
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
@@ -320,11 +318,6 @@ export default function App() {
   const sessionsRef = useRef<LessonSession[]>([]);
   const cloudUserRef = useRef<User | null>(null);
   const selectedVoiceRef = useRef<string>('Charon');
-  const playbackSpeedRef = useRef(playbackSpeed);
-  const isBoardPausedRef = useRef(isBoardPaused);
-  const pendingPointerRef = useRef<BoardPointer | null>(null);
-  playbackSpeedRef.current = playbackSpeed;
-  isBoardPausedRef.current = isBoardPaused;
 
   useEffect(() => {
     stepsRef.current = steps;
@@ -353,28 +346,6 @@ export default function App() {
   useEffect(() => {
     selectedVoiceRef.current = selectedVoice;
   }, [selectedVoice]);
-
-  useEffect(() => {
-    if (isBoardPaused || !pendingPointerRef.current) return;
-    const pointer = pendingPointerRef.current;
-    pendingPointerRef.current = null;
-    setActivePointer(pointer);
-    postToReactNative({ type: 'POINTER_MOVED', pointer });
-  }, [isBoardPaused]);
-
-  const waitForPlayback = useCallback(async (durationMs: number, speedAtStart: number) => {
-    let remaining = durationMs;
-    let lastTime = performance.now();
-    while (remaining > 0) {
-      await new Promise((resolve) => window.setTimeout(resolve, 50));
-      const now = performance.now();
-      const delta = Math.min(100, Math.max(0, now - lastTime));
-      lastTime = now;
-      if (!isBoardPausedRef.current && speedAtStart > 0) {
-        remaining -= delta * (playbackSpeedRef.current / speedAtStart);
-      }
-    }
-  }, []);
 
   const activeCourse = useMemo(() => {
     if (!activeSession?.course_id) return null;
@@ -431,16 +402,11 @@ export default function App() {
   const handlePointerMoved = useCallback((pointer: BoardPointer) => {
     lastAiToolPointerAtRef.current = Date.now();
     lastAutoAdvanceAtRef.current = Date.now();
-    if (isBoardPausedRef.current) {
-      pendingPointerRef.current = pointer;
-      return;
-    }
     setActivePointer(pointer);
     postToReactNative({ type: 'POINTER_MOVED', pointer });
   }, []);
 
   const handleTeacherSpeech = useCallback((_chunk: string, fullTurnText: string) => {
-    if (isBoardPausedRef.current) return;
     const currentSteps = stepsRef.current;
     if (currentSteps.length === 0) return;
 
@@ -489,8 +455,7 @@ export default function App() {
     }
 
     const totalLines = extractBoardLines(targetStep).length;
-    const pointerDelayMs = 4800 / playbackSpeedRef.current;
-    if (totalLines > 1 && now - lastAutoAdvanceAtRef.current > pointerDelayMs && currentLine < totalLines) {
+    if (totalLines > 1 && now - lastAutoAdvanceAtRef.current > 4800 && currentLine < totalLines) {
       lastAutoAdvanceAtRef.current = now;
       setActivePointer({
         step_number: targetStep.step_number,
@@ -518,7 +483,6 @@ export default function App() {
     moduleId: activeModuleId,
     model: selectedModel,
     voice: selectedVoice,
-    playbackSpeed,
     onBoardStepsUpdated: handleBoardStepsUpdated,
     onPointerMoved: handlePointerMoved,
     onTeacherSpeech: handleTeacherSpeech,
@@ -561,7 +525,6 @@ export default function App() {
   }, []);
 
   const loadSessionDetail = useCallback(async (sessionId: string) => {
-    pendingPointerRef.current = null;
     setIsLoadingBoard(true);
     try {
       let detail: LessonSession | null = null;
@@ -609,7 +572,6 @@ export default function App() {
           void clearCloudBoardSteps(cloudUserRef.current.uid, sessionId);
         }
         seenSignaturesRef.current = new Set();
-        pendingPointerRef.current = null;
         setAnimatedStepSignatures(new Set());
         setSteps([]);
         setActivePointer(null);
@@ -649,9 +611,8 @@ export default function App() {
           }
 
           // Wait for the slow chalk handwriting animation to finish plus a calm reading pause
-          const speedAtStart = playbackSpeedRef.current;
-          const writeMs = estimateChalkWritingDurationMs(item.title, stepLines, speedAtStart);
-          await waitForPlayback(writeMs, speedAtStart);
+          const writeMs = estimateChalkWritingDurationMs(item.title, stepLines);
+          await new Promise((r) => window.setTimeout(r, writeMs + 750));
 
           for (const pt of item.pointerPath) {
             setActivePointer({
@@ -659,7 +620,7 @@ export default function App() {
               line_number: pt.line_number,
               label: pt.label,
             });
-            await waitForPlayback(1850 / speedAtStart, speedAtStart);
+            await new Promise((r) => window.setTimeout(r, 1850));
           }
         }
         if (cloudUserRef.current?.uid && activeSessionRef.current) {
@@ -675,7 +636,7 @@ export default function App() {
         setIsSimulating(false);
       }
     },
-    [isSimulating, refreshSessionsList, waitForPlayback],
+    [isSimulating, refreshSessionsList],
   );
 
   const connectCourseAndExplain = useCallback(
@@ -732,7 +693,6 @@ export default function App() {
           void clearCloudBoardSteps(cloudUserRef.current.uid, targetSessionId);
         }
         seenSignaturesRef.current = new Set();
-        pendingPointerRef.current = null;
         setAnimatedStepSignatures(new Set());
         setSteps([]);
         setActivePointer(null);
@@ -873,7 +833,6 @@ export default function App() {
           method: 'POST',
         });
         seenSignaturesRef.current = new Set();
-        pendingPointerRef.current = null;
         setAnimatedStepSignatures(new Set());
         setSteps([]);
         setActivePointer(null);
@@ -1122,7 +1081,6 @@ export default function App() {
           const sid = activeSessionRef.current?.id;
           if (sid) {
             await fetch(`/api/sessions/${encodeURIComponent(sid)}/clear/`, { method: 'POST' });
-            pendingPointerRef.current = null;
             setSteps([]);
             setActivePointer(null);
           }
@@ -1489,18 +1447,6 @@ export default function App() {
           }}
           onRunSimulation={() => {
             void handleRunSimulation();
-          }}
-          playbackSpeed={playbackSpeed}
-          isBoardPaused={isBoardPaused}
-          onChangePlaybackSpeed={setPlaybackSpeed}
-          onToggleBoardPause={() => setIsBoardPaused((paused) => !paused)}
-          onSelectLine={(stepNumber, lineNumber) => {
-            pendingPointerRef.current = null;
-            setActivePointer({
-              step_number: stepNumber,
-              line_number: lineNumber,
-              label: 'Sélectionné',
-            });
           }}
         />
       </div>
