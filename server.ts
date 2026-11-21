@@ -11,6 +11,7 @@ import {
   type LiveServerMessage,
 } from '@google/genai';
 import {
+  attachPdfProfileToCourse,
   clearSessionSteps,
   connectCourseToSession,
   createSession,
@@ -35,6 +36,7 @@ import {
   buildPointToDeclaration,
   buildUpdateBoardDeclaration,
 } from './server/liveConfig.ts';
+import { analyzeCourseDocument } from './server/pdfAnalyzer.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 const ALLOWED_MODELS = new Set(AVAILABLE_LIVE_MODELS.map((m) => m.id));
@@ -73,7 +75,6 @@ function sendWsJson(ws: WebSocket, payload: Record<string, unknown>) {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
 
   // Mobile-friendly CORS for React Native / Expo Web & REST bridge
   app.use((req, res, next) => {
@@ -93,6 +94,110 @@ async function startServer() {
 
   // Ensure UDBL courses & at least one initial session exist on startup
   ensureInitialSession();
+
+  const pdfJsonParser = express.json({ limit: '16mb' });
+
+  const handlePdfAnalysisError = (err: unknown, res: express.Response) => {
+    if (err instanceof Error) {
+      switch (err.message) {
+        case 'UNSUPPORTED_MIME_TYPE':
+          res.status(400).json({ detail: 'Format non pris en charge. Envoyez un fichier PDF, TXT ou MD.' });
+          return;
+        case 'EMPTY_FILE':
+          res.status(400).json({ detail: 'Le fichier envoyé est vide.' });
+          return;
+        case 'FILE_TOO_LARGE':
+          res.status(413).json({ detail: 'Le document dépasse la limite de 10 Mo.' });
+          return;
+        case 'INVALID_PDF_HEADER':
+          res.status(400).json({ detail: 'Le fichier ne semble pas être un PDF valide (%PDF- manquant).' });
+          return;
+        case 'MISSING_API_KEY':
+          res.status(503).json({
+            detail: 'Clé GEMINI_API_KEY requise côté serveur pour analyser les PDF.',
+          });
+          return;
+        case 'MODEL_TEMPORARILY_UNAVAILABLE':
+          res.status(503).json({
+            detail: 'Les serveurs d’analyse PDF connaissent un pic de demande momentané. Réessayez dans quelques secondes.',
+          });
+          return;
+      }
+    }
+    console.error('PDF analysis error:', err);
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    const safeMessage = rawMessage.replace(/AIza[0-9A-Za-z_-]{10,}/g, '[KEY]').slice(0, 220);
+    res.status(500).json({
+      detail: `Impossible d’analyser ce document PDF pour le moment (${safeMessage || 'erreur interne'}).`,
+    });
+  };
+
+  // Dedicated 16MB routes for reading course PDFs and adapting style/exercises
+  app.post('/api/courses/import-pdf', pdfJsonParser, async (req, res) => {
+    const body = req.body ?? {};
+    if (typeof body.dataBase64 !== 'string' || !body.dataBase64.trim()) {
+      res.status(400).json({ detail: 'Le champ dataBase64 est requis.' });
+      return;
+    }
+    try {
+      const analyzed = await analyzeCourseDocument({
+        filename: typeof body.filename === 'string' ? body.filename : undefined,
+        mimeType: typeof body.mimeType === 'string' ? body.mimeType : 'application/pdf',
+        dataBase64: body.dataBase64,
+      });
+
+      const created = upsertCourse({
+        code: typeof body.code === 'string' && body.code.trim() ? body.code : analyzed.suggested_code,
+        title: typeof body.title === 'string' && body.title.trim() ? body.title : analyzed.suggested_title,
+        professor_name:
+          typeof body.professor_name === 'string' && body.professor_name.trim()
+            ? body.professor_name
+            : analyzed.suggested_professor,
+        syllabus_title: `PDF adapté · ${analyzed.pdf_profile.filename}`,
+        summary: analyzed.summary,
+        modules: analyzed.modules,
+        pdf_profile: analyzed.pdf_profile,
+        is_official: false,
+      });
+
+      res.status(201).json(created);
+    } catch (err) {
+      handlePdfAnalysisError(err, res);
+    }
+  });
+
+  app.post('/api/courses/:course_id/pdf', pdfJsonParser, async (req, res) => {
+    const course = getCourse(req.params.course_id);
+    if (!course) {
+      res.status(404).json({ detail: 'Cours introuvable.' });
+      return;
+    }
+    const body = req.body ?? {};
+    if (typeof body.dataBase64 !== 'string' || !body.dataBase64.trim()) {
+      res.status(400).json({ detail: 'Le champ dataBase64 est requis.' });
+      return;
+    }
+    try {
+      const analyzed = await analyzeCourseDocument({
+        filename: typeof body.filename === 'string' ? body.filename : undefined,
+        mimeType: typeof body.mimeType === 'string' ? body.mimeType : 'application/pdf',
+        dataBase64: body.dataBase64,
+        existingCourseTitle: course.title,
+      });
+
+      const updated = attachPdfProfileToCourse(course.id, analyzed.pdf_profile, {
+        summary: body.replaceMetadata ? analyzed.summary : undefined,
+        modules: body.replaceModules !== false ? analyzed.modules : undefined,
+        syllabus_title: `PDF adapté · ${analyzed.pdf_profile.filename}`,
+      });
+
+      res.status(200).json(updated);
+    } catch (err) {
+      handlePdfAnalysisError(err, res);
+    }
+  });
+
+  app.use(express.json({ limit: '2mb' }));
 
   // 1. GET /api/live-config/
   app.get('/api/live-config', (_req, res) => {
@@ -165,6 +270,7 @@ async function startServer() {
       syllabus_title: typeof body.syllabus_title === 'string' ? body.syllabus_title : undefined,
       summary: typeof body.summary === 'string' ? body.summary : undefined,
       modules: normalizedModules,
+      pdf_profile: body.pdf_profile && typeof body.pdf_profile === 'object' ? body.pdf_profile : undefined,
       is_official: false,
     });
     res.status(201).json(saved);

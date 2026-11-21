@@ -94,6 +94,21 @@ function ChalkCaret() {
   );
 }
 
+function splitExpressionAndJustification(rawLine: string): {
+  expression: string;
+  justification: string | null;
+} {
+  // Split on ` | ` or ` :: ` while ignoring LaTeX `||` norms
+  const match = rawLine.match(/^(.+?)\s+(?:\|(?!\|)|::)\s+(.+)$/);
+  if (!match) {
+    return { expression: rawLine, justification: null };
+  }
+  return {
+    expression: match[1].trim(),
+    justification: match[2].trim(),
+  };
+}
+
 function CalculRenderer({ content, activeLineNumber, writingState }: { content: string } & LineRenderProps) {
   const lines = content
     .split('\n')
@@ -105,8 +120,8 @@ function CalculRenderer({ content, activeLineNumber, writingState }: { content: 
   }
 
   return (
-    <div className="space-y-3.5">
-      {lines.map((line, index) => {
+    <div className="space-y-4">
+      {lines.map((rawLine, index) => {
         const lineNum = index + 1;
         const reveal = writingState?.lineStates[index];
         const isActivelyWritingThisLine =
@@ -117,78 +132,130 @@ function CalculRenderer({ content, activeLineNumber, writingState }: { content: 
         }
 
         const isPointed = !writingState?.isWriting && activeLineNumber === lineNum;
+        const { expression, justification } = splitExpressionAndJustification(rawLine);
+
+        const exprLen = expression.length;
+        const shownChars = reveal && !reveal.done ? reveal.chars : rawLine.length;
+        const shownExpr =
+          reveal && !reveal.done ? expression.slice(0, Math.min(exprLen, shownChars)) : expression;
+        const justificationOffset = rawLine.length - (justification?.length ?? 0);
+        const shownJustification =
+          justification && reveal && !reveal.done
+            ? shownChars > justificationOffset
+              ? justification.slice(0, shownChars - justificationOffset)
+              : ''
+            : justification;
+
         const cleanDisplay =
-          line.startsWith('$$') && line.endsWith('$$') ? line.slice(2, -2).trim() : null;
+          expression.startsWith('$$') && expression.endsWith('$$')
+            ? expression.slice(2, -2).trim()
+            : null;
 
         const looksLikeLatex =
           cleanDisplay !== null ||
-          /\\(frac|sqrt|sum|int|prod|alpha|beta|gamma|delta|Delta|pm|times|cdot|leq|geq|neq|approx|rightarrow|Rightarrow)/.test(
-            line,
+          /\\(frac|sqrt|sum|int|prod|alpha|beta|gamma|delta|Delta|pm|times|cdot|leq|geq|neq|approx|rightarrow|Rightarrow|iff|equiv|neg|land|lor)/.test(
+            expression,
           ) ||
-          (/\^|_/.test(line) && /[=+\-*/]/.test(line));
+          (/\^|_/.test(expression) && /[=+\-*/]/.test(expression));
 
         const baseHighlight = isPointed
           ? 'bg-amber-200/35 border-amber-600/65 ring-1 ring-amber-500/35'
-          : 'bg-white/65 border-stone-300/80';
+          : 'bg-white/70 border-stone-300/85';
+
+        const lineTag = (
+          <span className="font-mono-code tabular-nums text-xs font-semibold text-stone-500 shrink-0 pt-1">
+            L{lineNum}
+          </span>
+        );
 
         if (cleanDisplay !== null || looksLikeLatex) {
-          const expr = cleanDisplay ?? line.replace(/^\$|\$$/g, '');
-          const progressPct = reveal ? Math.round(reveal.progress * 100) : 100;
-          const clipRight = Math.max(0, 100 - progressPct);
+          const latexExpr = cleanDisplay ?? expression.replace(/^\$|\$$/g, '');
+          const exprProgress =
+            reveal && !reveal.done
+              ? Math.min(100, Math.round((shownExpr.length / Math.max(1, exprLen)) * 100))
+              : 100;
+          const clipRight = Math.max(0, 100 - exprProgress);
 
           return (
             <div
               key={index}
               data-line-index={lineNum}
-              className={`relative rounded-lg border px-4 py-3 overflow-x-auto transition-colors ${baseHighlight}`}
+              className={`rounded-lg border px-4 py-3.5 transition-colors ${baseHighlight}`}
             >
-              <div
-                style={
-                  writingState?.isWriting && reveal && !reveal.done
-                    ? { clipPath: `inset(0 ${clipRight}% 0 0)` }
-                    : undefined
-                }
-                dangerouslySetInnerHTML={{ __html: renderKatexMarkup(expr, true) }}
-              />
-              {isActivelyWritingThisLine && (
-                <span
-                  data-chalk-tip="true"
-                  aria-hidden="true"
-                  style={{ left: `${Math.min(92, Math.max(8, progressPct))}%` }}
-                  className="absolute top-1/2 -translate-y-1/2 w-0.5 h-6 bg-stone-900/60"
-                />
-              )}
+              <div className="flex items-start gap-3">
+                {lineTag}
+                <div className="flex-1 min-w-0 space-y-1.5">
+                  <div className="relative overflow-x-auto">
+                    <div
+                      style={
+                        writingState?.isWriting && reveal && !reveal.done
+                          ? { clipPath: `inset(0 ${clipRight}% 0 0)` }
+                          : undefined
+                      }
+                      dangerouslySetInnerHTML={{ __html: renderKatexMarkup(latexExpr, true) }}
+                    />
+                    {isActivelyWritingThisLine && !shownJustification && (
+                      <span
+                        data-chalk-tip="true"
+                        aria-hidden="true"
+                        style={{ left: `${Math.min(92, Math.max(8, exprProgress))}%` }}
+                        className="absolute top-1/2 -translate-y-1/2 w-0.5 h-6 bg-stone-900/60"
+                      />
+                    )}
+                  </div>
+
+                  {shownJustification && (
+                    <p className="text-sm sm:text-[15px] text-stone-700 leading-relaxed pt-1 border-t border-stone-200/80">
+                      <span className="font-medium text-blue-800 mr-1.5">Pourquoi :</span>
+                      <span>{shownJustification}</span>
+                      {isActivelyWritingThisLine && <ChalkCaret />}
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
           );
         }
 
-        const shownLine =
-          reveal && !reveal.done ? line.slice(0, reveal.chars) : line;
-        const isEquationLine = /[=≈<>]/.test(line);
-
-        if (isEquationLine) {
-          return (
-            <div
-              key={index}
-              data-line-index={lineNum}
-              className={`rounded-lg border px-4 py-2.5 font-handwriting text-xl sm:text-2xl font-bold text-stone-900 tracking-wide transition-colors ${baseHighlight}`}
-            >
-              <span>{shownLine}</span>
-              {isActivelyWritingThisLine && <ChalkCaret />}
-            </div>
-          );
-        }
+        const isEquationLine = /[=≈<>]/.test(expression);
 
         return (
           <div
             key={index}
             data-line-index={lineNum}
-            className={`rounded-lg px-3 py-1.5 font-handwriting text-lg sm:text-xl leading-relaxed text-stone-900 transition-colors ${
-              isPointed ? 'bg-amber-200/35 ring-1 ring-amber-500/40' : ''
-            }`}
+            className={`rounded-lg border px-4 py-3 transition-colors ${baseHighlight}`}
           >
-            {renderInlineFormattedText(shownLine, `calc-${index}`, Boolean(reveal && !reveal.done))}
-            {isActivelyWritingThisLine && <ChalkCaret />}
+            <div className="flex items-start gap-3">
+              {lineTag}
+              <div className="flex-1 min-w-0 space-y-1">
+                <div
+                  className={
+                    isEquationLine
+                      ? 'font-handwriting text-xl sm:text-2xl font-bold text-stone-900 tracking-wide'
+                      : 'font-handwriting text-lg sm:text-xl leading-relaxed text-stone-900'
+                  }
+                >
+                  <span>
+                    {isEquationLine
+                      ? shownExpr
+                      : renderInlineFormattedText(
+                          shownExpr,
+                          `calc-${index}`,
+                          Boolean(reveal && !reveal.done && shownExpr.length < exprLen),
+                        )}
+                  </span>
+                  {isActivelyWritingThisLine && !shownJustification && <ChalkCaret />}
+                </div>
+
+                {shownJustification && (
+                  <p className="text-sm sm:text-[15px] text-stone-700 leading-relaxed pt-1 border-t border-stone-200/80">
+                    <span className="font-medium text-blue-800 mr-1.5">Pourquoi :</span>
+                    <span>{shownJustification}</span>
+                    {isActivelyWritingThisLine && <ChalkCaret />}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
         );
       })}
@@ -591,7 +658,7 @@ function ProseRenderer({ content, activeLineNumber, writingState }: { content: s
     .filter((l) => l.trim().length > 0);
 
   return (
-    <div className="space-y-3 font-handwriting text-[19px] sm:text-[21px] leading-relaxed text-stone-900">
+    <div className="space-y-3.5 font-handwriting text-[19px] sm:text-[21px] leading-relaxed text-stone-900">
       {lines.map((line, index) => {
         const lineNum = index + 1;
         const reveal = writingState?.lineStates[index];
@@ -607,11 +674,18 @@ function ProseRenderer({ content, activeLineNumber, writingState }: { content: s
         const trimmed = shownLine.trim();
         const isPartial = Boolean(reveal && !reveal.done);
         const highlightCls = isPointed
-          ? 'bg-amber-200/35 ring-1 ring-amber-500/45 rounded-lg px-3 py-1.5'
+          ? 'bg-amber-200/35 ring-1 ring-amber-500/45 rounded-lg px-3 py-2'
           : 'rounded-lg px-2 py-1';
 
+        const { expression: fullExpr, justification: fullJustif } = splitExpressionAndJustification(
+          line.trim().replace(/^[-•*]\s+/, ''),
+        );
+        const shownClean = trimmed.replace(/^[-•*]\s*/, '');
+        const splitShown = fullJustif
+          ? splitExpressionAndJustification(shownClean)
+          : { expression: shownClean, justification: null };
+
         if (/^[-•*]\s+/.test(line.trim())) {
-          const cleanBulletText = trimmed.replace(/^[-•*]\s*/, '');
           return (
             <div
               key={index}
@@ -621,23 +695,49 @@ function ProseRenderer({ content, activeLineNumber, writingState }: { content: s
               <span className="text-blue-700 mt-1 text-base select-none font-bold" aria-hidden="true">
                 •
               </span>
-              <p className="flex-1">
-                {renderInlineFormattedText(cleanBulletText, `list-${index}`, isPartial)}
-                {isActivelyWritingThisLine && <ChalkCaret />}
-              </p>
+              <div className="flex-1 space-y-0.5">
+                <p>
+                  {renderInlineFormattedText(
+                    splitShown.expression,
+                    `list-${index}`,
+                    isPartial && splitShown.expression.length < fullExpr.length,
+                  )}
+                  {isActivelyWritingThisLine && !splitShown.justification && <ChalkCaret />}
+                </p>
+                {splitShown.justification && (
+                  <p className="font-sans text-sm text-stone-600 leading-relaxed">
+                    <span className="font-medium text-blue-800 mr-1">Pourquoi :</span>
+                    {splitShown.justification}
+                    {isActivelyWritingThisLine && <ChalkCaret />}
+                  </p>
+                )}
+              </div>
             </div>
           );
         }
 
         return (
-          <p
+          <div
             key={index}
             data-line-index={lineNum}
-            className={`leading-relaxed transition-colors ${highlightCls}`}
+            className={`leading-relaxed transition-colors space-y-0.5 ${highlightCls}`}
           >
-            {renderInlineFormattedText(trimmed, `prose-${index}`, isPartial)}
-            {isActivelyWritingThisLine && <ChalkCaret />}
-          </p>
+            <p>
+              {renderInlineFormattedText(
+                splitShown.expression,
+                `prose-${index}`,
+                isPartial && splitShown.expression.length < fullExpr.length,
+              )}
+              {isActivelyWritingThisLine && !splitShown.justification && <ChalkCaret />}
+            </p>
+            {splitShown.justification && (
+              <p className="font-sans text-sm text-stone-600 leading-relaxed">
+                <span className="font-medium text-blue-800 mr-1">Pourquoi :</span>
+                {splitShown.justification}
+                {isActivelyWritingThisLine && <ChalkCaret />}
+              </p>
+            )}
+          </div>
         );
       })}
     </div>

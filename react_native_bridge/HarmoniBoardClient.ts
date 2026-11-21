@@ -15,6 +15,15 @@ export interface SyncCoursePayload {
   modules?: CourseModuleInput[];
 }
 
+export interface PdfUploadPayload {
+  filename: string;
+  mimeType?: 'application/pdf' | 'text/plain' | 'text/markdown';
+  dataBase64: string;
+  title?: string;
+  code?: string;
+  professor_name?: string;
+}
+
 export class HarmoniBoardClient {
   private readonly baseUrl: string;
 
@@ -58,6 +67,32 @@ export class HarmoniBoardClient {
       body: JSON.stringify({ course_id: courseId }),
     });
     if (!res.ok) throw new Error(`Connect course failed (${res.status})`);
+    return res.json();
+  }
+
+  async uploadCoursePdf(courseId: string, payload: PdfUploadPayload) {
+    const res = await fetch(`${this.baseUrl}/api/courses/${encodeURIComponent(courseId)}/pdf`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Platform': 'react-native-expo',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`PDF course adaptation failed (${res.status})`);
+    return res.json();
+  }
+
+  async importCourseFromPdf(payload: PdfUploadPayload) {
+    const res = await fetch(`${this.baseUrl}/api/courses/import-pdf`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Platform': 'react-native-expo',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`PDF course import failed (${res.status})`);
     return res.json();
   }
 

@@ -7,6 +7,7 @@ import type {
   CourseItem,
   CourseModule,
   LessonSession,
+  PdfStyleProfile,
   StepType,
 } from '../src/types/board.ts';
 
@@ -30,6 +31,7 @@ db.exec(`
     syllabus_title TEXT NOT NULL DEFAULT 'Syllabus officiel',
     summary TEXT NOT NULL DEFAULT '',
     modules_json TEXT NOT NULL DEFAULT '[]',
+    pdf_profile_json TEXT,
     is_official INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -58,7 +60,12 @@ db.exec(`
   );
 `);
 
-// Safe migration if lesson_sessions existed prior to course_id column
+// Safe migrations for existing databases
+const courseColumns = db.prepare('PRAGMA table_info(courses)').all() as Array<{ name: string }>;
+if (!courseColumns.some((col) => col.name === 'pdf_profile_json')) {
+  db.exec('ALTER TABLE courses ADD COLUMN pdf_profile_json TEXT');
+}
+
 const sessionColumns = db.prepare('PRAGMA table_info(lesson_sessions)').all() as Array<{ name: string }>;
 if (!sessionColumns.some((col) => col.name === 'course_id')) {
   db.exec('ALTER TABLE lesson_sessions ADD COLUMN course_id TEXT REFERENCES courses(id) ON DELETE SET NULL');
@@ -73,6 +80,7 @@ interface RawCourseRow {
   syllabus_title: string;
   summary: string;
   modules_json: string;
+  pdf_profile_json: string | null;
   is_official: number;
   created_at: string;
   updated_at: string;
@@ -131,6 +139,17 @@ function parseModules(raw: string): CourseModule[] {
   }
 }
 
+function parsePdfProfile(raw: string | null): PdfStyleProfile | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PdfStyleProfile;
+    if (!parsed || typeof parsed !== 'object' || !parsed.filename) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function mapCourse(row: RawCourseRow): CourseItem {
   return {
     id: row.id,
@@ -141,6 +160,7 @@ function mapCourse(row: RawCourseRow): CourseItem {
     syllabus_title: row.syllabus_title,
     summary: row.summary,
     modules: parseModules(row.modules_json),
+    pdf_profile: parsePdfProfile(row.pdf_profile_json),
     is_official: Boolean(row.is_official),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -376,7 +396,7 @@ export function ensureDefaultCourses(): void {
 export function listCourses(): CourseItem[] {
   const rows = db
     .prepare(
-      `SELECT id, code, title, professor_name, level, syllabus_title, summary, modules_json, is_official, created_at, updated_at
+      `SELECT id, code, title, professor_name, level, syllabus_title, summary, modules_json, pdf_profile_json, is_official, created_at, updated_at
        FROM courses
        ORDER BY is_official DESC, title ASC`,
     )
@@ -387,7 +407,7 @@ export function listCourses(): CourseItem[] {
 export function getCourse(courseId: string): CourseItem | null {
   const row = db
     .prepare(
-      `SELECT id, code, title, professor_name, level, syllabus_title, summary, modules_json, is_official, created_at, updated_at
+      `SELECT id, code, title, professor_name, level, syllabus_title, summary, modules_json, pdf_profile_json, is_official, created_at, updated_at
        FROM courses WHERE id = ?`,
     )
     .get(courseId) as RawCourseRow | undefined;
@@ -403,6 +423,7 @@ export interface UpsertCourseInput {
   syllabus_title?: string;
   summary?: string;
   modules?: CourseModule[];
+  pdf_profile?: PdfStyleProfile | null;
   is_official?: boolean;
 }
 
@@ -420,12 +441,13 @@ export function upsertCourse(input: UpsertCourseInput): CourseItem {
   const syllabusTitle = input.syllabus_title?.trim() || `Support de cours · ${cleanTitle}`;
   const summary = input.summary?.trim() || `Cours personnalisé connecté depuis l’application : ${cleanTitle}.`;
   const modules = Array.isArray(input.modules) ? input.modules : [];
+  const pdfProfileJson = input.pdf_profile ? JSON.stringify(input.pdf_profile) : null;
   const isOfficial = input.is_official ? 1 : 0;
 
   db.prepare(`
     INSERT INTO courses (
-      id, code, title, professor_name, level, syllabus_title, summary, modules_json, is_official, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, code, title, professor_name, level, syllabus_title, summary, modules_json, pdf_profile_json, is_official, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       code = excluded.code,
       title = excluded.title,
@@ -434,6 +456,7 @@ export function upsertCourse(input: UpsertCourseInput): CourseItem {
       syllabus_title = excluded.syllabus_title,
       summary = excluded.summary,
       modules_json = excluded.modules_json,
+      pdf_profile_json = COALESCE(excluded.pdf_profile_json, courses.pdf_profile_json),
       updated_at = excluded.updated_at
   `).run(
     id,
@@ -444,12 +467,55 @@ export function upsertCourse(input: UpsertCourseInput): CourseItem {
     syllabusTitle,
     summary,
     JSON.stringify(modules),
+    pdfProfileJson,
     isOfficial,
     now,
     now,
   );
 
   return getCourse(id)!;
+}
+
+export function attachPdfProfileToCourse(
+  courseId: string,
+  profile: PdfStyleProfile,
+  options?: {
+    summary?: string;
+    modules?: CourseModule[];
+    syllabus_title?: string;
+  },
+): CourseItem | null {
+  const existing = getCourse(courseId);
+  if (!existing) return null;
+
+  const now = new Date().toISOString();
+  const nextModules =
+    options?.modules && options.modules.length > 0 ? options.modules : existing.modules;
+  const nextSummary =
+    options?.summary && options.summary.trim() ? options.summary.trim() : existing.summary;
+  const nextSyllabusTitle =
+    options?.syllabus_title && options.syllabus_title.trim()
+      ? options.syllabus_title.trim()
+      : `PDF adapté · ${profile.filename}`;
+
+  db.prepare(`
+    UPDATE courses
+    SET pdf_profile_json = ?,
+        summary = ?,
+        modules_json = ?,
+        syllabus_title = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(
+    JSON.stringify(profile),
+    nextSummary,
+    JSON.stringify(nextModules),
+    nextSyllabusTitle,
+    now,
+    courseId,
+  );
+
+  return getCourse(courseId);
 }
 
 export function deleteCourse(courseId: string): boolean {

@@ -1,14 +1,14 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type ChangeEvent } from 'react';
 import {
   BookMarked,
+  FileText,
   Mic,
   MicOff,
-  Play,
   PlugZap,
   PowerOff,
-  Send,
   Sparkles,
   Trash2,
+  Upload,
   Volume2,
   Plus,
   AlertCircle,
@@ -38,10 +38,12 @@ interface ControlDeckProps {
   micLevel: number;
   errorMessage: string | null;
   transcripts: TranscriptEntry[];
-  isSimulating: boolean;
   isConnectingCourse: boolean;
+  isUploadingPdf: boolean;
+  pdfError: string | null;
   onOpenCourseMenu: () => void;
   onQuickExplainCourse: (course: CourseItem, moduleId: string | null) => void;
+  onUploadPdfForCourse: (file: File, targetCourseId?: string) => Promise<CourseItem | null>;
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
   onDeleteSession: (sessionId: string) => void;
@@ -50,16 +52,8 @@ interface ControlDeckProps {
   onConnect: () => void;
   onDisconnect: () => void;
   onToggleMic: () => void;
-  onSendPrompt: (text: string) => Promise<boolean>;
-  onRunSimulation: () => void;
   onClearTranscripts: () => void;
 }
-
-const QUICK_PROMPTS = [
-  'Calcule-moi 1 + 2 étape par étape avec un exemple',
-  'Explique le théorème de Pythagore (formule, schéma et exemple)',
-  'Explique les boucles for en Python avec un exemple court',
-];
 
 export function ControlDeck({
   config,
@@ -76,10 +70,12 @@ export function ControlDeck({
   micLevel,
   errorMessage,
   transcripts,
-  isSimulating,
   isConnectingCourse,
+  isUploadingPdf,
+  pdfError,
   onOpenCourseMenu,
   onQuickExplainCourse,
+  onUploadPdfForCourse,
   onSelectSession,
   onCreateSession,
   onDeleteSession,
@@ -88,41 +84,22 @@ export function ControlDeck({
   onConnect,
   onDisconnect,
   onToggleMic,
-  onSendPrompt,
-  onRunSimulation,
   onClearTranscripts,
 }: ControlDeckProps) {
-  const [promptInput, setPromptInput] = useState('');
-  const [isSendingPrompt, setIsSendingPrompt] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   const isConnected = connectionState === 'connected';
   const isConnecting = connectionState === 'connecting';
 
-  const handleSubmitPrompt = async (e: FormEvent) => {
-    e.preventDefault();
-    const trimmed = promptInput.trim();
-    if (!trimmed || isSendingPrompt) return;
-    setIsSendingPrompt(true);
-    const ok = await onSendPrompt(trimmed);
-    setIsSendingPrompt(false);
-    if (ok) {
-      setPromptInput('');
-    }
-  };
-
-  const handlePresetClick = async (preset: string) => {
-    if (isSendingPrompt) return;
-    setPromptInput(preset);
-    setIsSendingPrompt(true);
-    const ok = await onSendPrompt(preset);
-    setIsSendingPrompt(false);
-    if (ok) {
-      setPromptInput('');
-    }
-  };
-
   const activeModuleTitle = activeCourse?.modules.find((m) => m.id === activeModuleId)?.title;
+
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    await onUploadPdfForCourse(file, activeCourse?.id);
+  };
 
   return (
     <aside className="w-full lg:w-[400px] xl:w-[420px] shrink-0 bg-[#F8F6F1] border-b lg:border-b-0 lg:border-r border-[#E5E0D5] flex flex-col">
@@ -143,6 +120,16 @@ export function ControlDeck({
             </button>
           </div>
 
+          <input
+            ref={pdfInputRef}
+            type="file"
+            accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+            onChange={(e) => {
+              void handleFileChange(e);
+            }}
+            className="hidden"
+          />
+
           {activeCourse ? (
             <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E0D5] p-3 space-y-2.5">
               <div>
@@ -157,35 +144,91 @@ export function ControlDeck({
                 {activeModuleTitle && (
                   <p className="text-xs text-sky-800 mt-0.5">Chapitre : {activeModuleTitle}</p>
                 )}
+                {activeCourse.pdf_profile && (
+                  <p className="text-[11px] text-emerald-800 mt-1 flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">
+                      PDF adapté : {activeCourse.pdf_profile.filename}
+                      {activeCourse.pdf_profile.exercises.length > 0
+                        ? ` · ${activeCourse.pdf_profile.exercises.length} ex.`
+                        : ''}
+                    </span>
+                  </p>
+                )}
               </div>
 
-              <button
-                type="button"
-                disabled={isConnectingCourse || !activeSessionId}
-                onClick={() => onQuickExplainCourse(activeCourse, activeModuleId)}
-                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium bg-stone-900 text-white hover:bg-stone-800 disabled:opacity-50 transition-colors cursor-pointer"
-              >
-                {isConnectingCourse ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                )}
-                <span>Demander au prof d’expliquer ce cours</span>
-              </button>
+              {pdfError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-2.5 py-1.5 text-xs text-red-800 flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{pdfError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isConnectingCourse || !activeSessionId}
+                  onClick={() => onQuickExplainCourse(activeCourse, activeModuleId)}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-stone-900 text-white hover:bg-stone-800 disabled:opacity-50 transition-colors cursor-pointer"
+                >
+                  {isConnectingCourse ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  )}
+                  <span>Expliquer</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isUploadingPdf}
+                  onClick={() => pdfInputRef.current?.click()}
+                  title="Lire un PDF pour adapter le style et les exercices du professeur"
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[#D6D0C4] bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  {isUploadingPdf ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5 text-sky-700" />
+                  )}
+                  <span>{isUploadingPdf ? 'Lecture…' : 'Lire un PDF'}</span>
+                </button>
+              </div>
             </div>
           ) : (
             <div className="rounded-lg bg-[#FAF9F6] border border-dashed border-[#D6D0C4] p-3 space-y-2">
               <p className="text-xs text-stone-600 leading-relaxed">
-                Aucun cours connecté. Reliez le professeur à un cours UDBL ou personnalisé pour qu’il l’explique au tableau.
+                Aucun cours connecté. Reliez le professeur à un cours ou importez directement un PDF de TD/cours.
               </p>
-              <button
-                type="button"
-                onClick={onOpenCourseMenu}
-                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium bg-sky-700 text-white hover:bg-sky-800 transition-colors cursor-pointer"
-              >
-                <BookMarked className="w-3.5 h-3.5" />
-                <span>Connecter un cours</span>
-              </button>
+              {pdfError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-2.5 py-1.5 text-xs text-red-800 flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{pdfError}</span>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onOpenCourseMenu}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-sky-700 text-white hover:bg-sky-800 transition-colors cursor-pointer"
+                >
+                  <BookMarked className="w-3.5 h-3.5" />
+                  <span>Choisir un cours</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isUploadingPdf}
+                  onClick={() => pdfInputRef.current?.click()}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[#D6D0C4] bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  {isUploadingPdf ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5 text-sky-700" />
+                  )}
+                  <span>{isUploadingPdf ? 'Lecture…' : 'PDF'}</span>
+                </button>
+              </div>
             </div>
           )}
         </section>
@@ -454,65 +497,6 @@ export function ControlDeck({
               )}
             </div>
           )}
-        </section>
-
-        {/* Section 3: Quick Prompt & Local Simulation */}
-        <section id="section-consignes" className="bg-white border border-[#E5E0D5] rounded-xl p-4 space-y-3">
-          <h2 className="font-display text-base font-semibold text-stone-900">
-            Consigne rapide & Simulation
-          </h2>
-
-          <form onSubmit={handleSubmitPrompt} className="space-y-2.5">
-            <textarea
-              rows={2}
-              value={promptInput}
-              onChange={(e) => setPromptInput(e.target.value)}
-              placeholder="Posez une question ou demandez un calcul au professeur…"
-              className="w-full rounded-lg border border-[#D6D0C4] bg-[#FAF9F6] px-3 py-2 text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-sky-600 resize-none"
-            />
-            <div className="flex items-center gap-2">
-              <button
-                type="submit"
-                disabled={!promptInput.trim() || isSendingPrompt || !activeSessionId}
-                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-stone-900 text-white hover:bg-stone-800 disabled:opacity-50 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>Envoyer la consigne</span>
-              </button>
-              <button
-                type="button"
-                id="btn-simulation"
-                onClick={onRunSimulation}
-                disabled={isSimulating || !activeSessionId}
-                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium border border-[#D6D0C4] bg-[#FAF9F6] text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                {isSimulating ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Play className="w-3.5 h-3.5 text-amber-600" />
-                )}
-                <span>Simuler</span>
-              </button>
-            </div>
-          </form>
-
-          <div className="space-y-1.5 pt-1">
-            <p className="text-xs font-medium text-stone-500">Exemples rapides</p>
-            <div className="flex flex-col gap-1.5">
-              {QUICK_PROMPTS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => handlePresetClick(preset)}
-                  disabled={isSendingPrompt || !activeSessionId}
-                  className="text-left text-xs text-stone-700 hover:text-stone-950 px-2.5 py-1.5 rounded-md bg-[#FAF9F6] hover:bg-stone-100 border border-[#E5E0D5] transition-colors flex items-center gap-2 cursor-pointer"
-                >
-                  <Sparkles className="w-3 h-3 text-amber-600 shrink-0" />
-                  <span className="truncate">{preset}</span>
-                </button>
-              ))}
-            </div>
-          </div>
         </section>
 
         {/* Section 4: Live Transcript Log */}

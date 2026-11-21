@@ -17,6 +17,23 @@ export interface BoardStep {
   created_at: string;
 }
 
+export interface PdfExerciseItem {
+  title: string;
+  statement: string;
+  method_steps: string[];
+  exact_format_sample: string;
+}
+
+export interface PdfStyleProfile {
+  filename: string;
+  analyzed_at: string;
+  writing_style: string;
+  notation_conventions: string;
+  methodology_pattern: string;
+  exercises: PdfExerciseItem[];
+  verbatim_excerpts: string[];
+}
+
 export interface CourseModule {
   id: string;
   title: string;
@@ -33,6 +50,7 @@ export interface CourseItem {
   syllabus_title: string;
   summary: string;
   modules: CourseModule[];
+  pdf_profile?: PdfStyleProfile | null;
   is_official: boolean;
   created_at: string;
   updated_at: string;

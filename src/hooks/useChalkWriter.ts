@@ -42,6 +42,28 @@ function buildImmediateState(title: string, lines: string[]): ChalkWritingState 
   };
 }
 
+// Calm, deliberate blackboard handwriting cadence (~28 characters/second) with breathing pauses
+const CHARS_PER_SECOND = 28;
+const TITLE_PAUSE_MS = 350;
+const LINE_PAUSE_MS = 450;
+
+function computeTitleDurationMs(title: string): number {
+  return Math.max(450, Math.min(2000, (title.length / CHARS_PER_SECOND) * 1000));
+}
+
+function computeLineDurationMs(line: string): number {
+  return Math.max(600, Math.min(2600, (line.length / CHARS_PER_SECOND) * 1000));
+}
+
+export function estimateChalkWritingDurationMs(title: string, lines: string[]): number {
+  if (prefersReducedMotion()) return 250;
+  const titleMs = computeTitleDurationMs(title);
+  if (lines.length === 0) return titleMs;
+  const linesMs = lines.reduce((acc, line) => acc + computeLineDurationMs(line), 0);
+  const pausesMs = TITLE_PAUSE_MS + Math.max(0, lines.length - 1) * LINE_PAUSE_MS;
+  return Math.round(titleMs + linesMs + pausesMs);
+}
+
 export function useChalkWriter({
   stepSignature,
   title,
@@ -70,13 +92,10 @@ export function useChalkWriter({
     let rafId = 0;
     let lastTime = performance.now();
 
-    // Writing speed: ~68 characters per second (snappy yet clearly visible)
-    const titleDurationMs = Math.max(220, (title.length / 68) * 1000);
-    const lineDurationsMs = lines.map((line) =>
-      Math.max(280, Math.min(950, (line.length / 68) * 1000)),
-    );
+    const titleDurationMs = computeTitleDurationMs(title);
+    const lineDurationsMs = lines.map((line) => computeLineDurationMs(line));
 
-    let phase: 'title' | 'lines' | 'done' = 'title';
+    let phase: 'title' | 'title_pause' | 'lines' | 'line_pause' | 'done' = 'title';
     let elapsedInPhase = 0;
     let currentLineIdx = 0;
 
@@ -112,6 +131,15 @@ export function useChalkWriter({
             setState(buildImmediateState(title, lines));
             return;
           }
+          phase = 'title_pause';
+          elapsedInPhase = 0;
+        }
+        rafId = window.requestAnimationFrame(tick);
+        return;
+      }
+
+      if (phase === 'title_pause') {
+        if (elapsedInPhase >= TITLE_PAUSE_MS) {
           phase = 'lines';
           currentLineIdx = 0;
           elapsedInPhase = 0;
@@ -121,7 +149,7 @@ export function useChalkWriter({
       }
 
       if (phase === 'lines') {
-        const duration = lineDurationsMs[currentLineIdx] ?? 320;
+        const duration = lineDurationsMs[currentLineIdx] ?? 700;
         const lineProgress = Math.min(1, elapsedInPhase / duration);
 
         setState({
@@ -146,13 +174,23 @@ export function useChalkWriter({
         });
 
         if (lineProgress >= 1) {
-          currentLineIdx += 1;
-          elapsedInPhase = 0;
-          if (currentLineIdx >= lines.length) {
+          if (currentLineIdx + 1 >= lines.length) {
             phase = 'done';
             setState(buildImmediateState(title, lines));
             return;
           }
+          phase = 'line_pause';
+          elapsedInPhase = 0;
+        }
+        rafId = window.requestAnimationFrame(tick);
+        return;
+      }
+
+      if (phase === 'line_pause') {
+        if (elapsedInPhase >= LINE_PAUSE_MS) {
+          currentLineIdx += 1;
+          phase = 'lines';
+          elapsedInPhase = 0;
         }
         rafId = window.requestAnimationFrame(tick);
       }

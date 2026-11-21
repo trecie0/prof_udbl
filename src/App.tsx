@@ -3,6 +3,7 @@ import { BookMarked } from 'lucide-react';
 import { ControlDeck } from './components/ControlDeck.tsx';
 import { CourseMenuModal } from './components/CourseMenuModal.tsx';
 import { TeacherBoard, buildStepSignature } from './components/TeacherBoard.tsx';
+import { estimateChalkWritingDurationMs } from './hooks/useChalkWriter.ts';
 import { useLiveProfessor } from './hooks/useLiveProfessor.ts';
 import type {
   BoardPointer,
@@ -10,6 +11,7 @@ import type {
   CourseItem,
   LessonSession,
   LiveConfigResponse,
+  PdfExerciseItem,
   StepType,
 } from './types/board.ts';
 import {
@@ -37,20 +39,23 @@ const DEFAULT_SIMULATION_SEQUENCE: SimulationStepPayload[] = [
     type: 'etape',
     title: 'Principe : additionner les 2 précédents',
     content:
-      '- **Départ** : $F_0 = 0$ et $F_1 = 1$\n- **Règle** : chaque terme = somme des 2 précédents\n- **Usage** : algorithmique, nature, proportions',
+      '- **Départ** : $F_0 = 0$ et $F_1 = 1$ | Valeurs initiales fixes pour démarrer la suite\n- **Règle** : chaque terme = somme des 2 précédents | On réutilise toujours les deux derniers résultats\n- **Usage** : algorithmique, croissance, proportions | Sert à modéliser des étapes dépendantes',
     pointerPath: [
       { line_number: 1, label: 'Conditions de départ' },
       { line_number: 2, label: 'Règle clé' },
+      { line_number: 3, label: 'Utilité' },
     ],
   },
   {
     step_number: 2,
     type: 'calcul',
-    title: 'Formule de récurrence',
-    content: '$$F_n = F_{n-1} + F_{n-2}$$\nF_2 = 1 + 0 = 1\nF_3 = 1 + 1 = 2',
+    title: 'Formule de récurrence pas à pas',
+    content:
+      '$$F_n = F_{n-1} + F_{n-2}$$ | Formule générale : le rang n dépend de n-1 et n-2\nF_2 = F_1 + F_0 = 1 + 0 = 1 | On remplace F_1 par 1 et F_0 par 0\nF_3 = F_2 + F_1 = 1 + 1 = 2 | On réutilise F_2 = 1 qu’on vient de trouver',
     pointerPath: [
       { line_number: 1, label: 'Formule générale' },
-      { line_number: 3, label: 'Calcul pas à pas' },
+      { line_number: 2, label: 'Calcul de F2' },
+      { line_number: 3, label: 'Calcul de F3' },
     ],
   },
   {
@@ -92,15 +97,98 @@ const DEFAULT_SIMULATION_SEQUENCE: SimulationStepPayload[] = [
     type: 'synthese',
     title: 'À retenir',
     content:
-      '- **Récursion naïve** : lente ($O(2^n)$)\n- **Approche itérative** : rapide ($O(n)$)\n- Toujours vérifier $n = 0$ et $n = 1$',
-    pointerPath: [{ line_number: 2, label: 'Meilleure méthode' }],
+      '- **Récursion naïve** : lente ($O(2^n)$) | Recalcule plusieurs fois les mêmes termes\n- **Approche itérative** : rapide ($O(n)$) | Ne garde en mémoire que les 2 derniers termes\n- Toujours vérifier $n = 0$ et $n = 1$ | Évite toute boucle infinie ou erreur de départ',
+    pointerPath: [
+      { line_number: 1, label: 'Limite récursive' },
+      { line_number: 2, label: 'Meilleure méthode' },
+    ],
   },
 ];
+
+function inferDocumentMimeType(file: File): string {
+  const lower = file.name.toLowerCase();
+  if (file.type === 'application/pdf' || lower.endsWith('.pdf')) return 'application/pdf';
+  if (file.type === 'text/markdown' || lower.endsWith('.md')) return 'text/markdown';
+  if (file.type === 'text/plain' || lower.endsWith('.txt')) return 'text/plain';
+  return file.type || 'application/pdf';
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Impossible de lire le fichier sélectionné.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function buildExerciseSimulationSequence(
+  course: CourseItem,
+  exercise: PdfExerciseItem,
+): SimulationStepPayload[] {
+  const profile = course.pdf_profile;
+  const methodStepLines =
+    exercise.method_steps.length > 0
+      ? exercise.method_steps.map((step, i) => `Étape ${i + 1} : ${step} | Suivant la méthode du PDF`)
+      : [profile?.methodology_pattern || 'Application directe de la démarche du document PDF.'];
+
+  const formatSample =
+    exercise.exact_format_sample ||
+    profile?.verbatim_excerpts[0] ||
+    'Rédaction conforme au modèle du document.';
+
+  const conventionPrefix = profile
+    ? [`- **Style** : ${profile.writing_style}`, `- **Notations** : ${profile.notation_conventions}`]
+    : [];
+  const step2Lines = [...conventionPrefix, ...methodStepLines];
+
+  return [
+    {
+      step_number: 1,
+      type: 'exemple',
+      title: `Énoncé recopié · ${exercise.title}`,
+      content: exercise.statement,
+      pointerPath: [{ line_number: 1, label: 'Énoncé exact du PDF' }],
+    },
+    {
+      step_number: 2,
+      type: 'etape',
+      title: 'Méthode & notations du PDF (pas à pas)',
+      content: step2Lines.join('\n'),
+      pointerPath: step2Lines.slice(0, 4).map((_, idx) => ({
+        line_number: idx + 1,
+        label: idx < conventionPrefix.length ? 'Conventions du PDF' : `Étape ${idx - conventionPrefix.length + 1}`,
+      })),
+    },
+    {
+      step_number: 3,
+      type: 'calcul',
+      title: 'Rédaction & résultat dans le format du PDF',
+      content: formatSample,
+      pointerPath: [{ line_number: 1, label: 'Mise en forme fidèle' }],
+    },
+    {
+      step_number: 4,
+      type: 'synthese',
+      title: `À retenir · ${course.title}`,
+      content: `- **Source PDF** : ${profile?.filename ?? course.title} | Support officiel\n- **Démarche type** : ${profile?.methodology_pattern ?? 'Respecter exactement l’énoncé et les notations du support.'} | À reproduire à l’examen`,
+      pointerPath: [{ line_number: 2, label: 'Démarche à reproduire' }],
+    },
+  ];
+}
 
 function buildCourseSimulationSequence(
   course: CourseItem,
   moduleId: string | null,
 ): SimulationStepPayload[] {
+  if (course.pdf_profile && course.pdf_profile.exercises.length > 0 && !moduleId) {
+    return buildExerciseSimulationSequence(course, course.pdf_profile.exercises[0]);
+  }
+
   if (course.id === 'udbl-prog-algo' && (!moduleId || moduleId === 'algo-recursivite')) {
     return DEFAULT_SIMULATION_SEQUENCE;
   }
@@ -132,13 +220,14 @@ function buildCourseSimulationSequence(
       ? {
           step_number: 2,
           type: 'calcul',
-          title: 'Relation & expression clé',
+          title: 'Démonstration détaillée ligne par ligne',
           content: course.id.includes('algebre')
-            ? '$$A \\cdot X = B \\iff X = A^{-1} \\cdot B$$\ndet(A) != 0 -> solution unique\nPivot de Gauss -> forme échelonnée'
-            : '$$\\neg(A \\land B) \\equiv (\\neg A) \\lor (\\neg B)$$\nP => Q équivaut à non-Q => non-P\nTable de vérité -> validation complète',
+            ? '$$A \\cdot X = B$$ | Équation matricielle de départ\n$$\\det(A) \\neq 0$$ | On vérifie d’abord que la matrice A est inversible\n$$A^{-1} \\cdot A \\cdot X = A^{-1} \\cdot B$$ | On multiplie à gauche par l’inverse des deux côtés\n$$X = A^{-1} \\cdot B$$ | Car A^-1 · A = I (matrice identité), d’où la solution unique'
+            : '$$\\neg(A \\land B)$$ | Expression de départ à simplifier\n$$\\neg(A \\land B) \\equiv (\\neg A) \\lor (\\neg B)$$ | Loi de De Morgan : la négation transforme ET en OU\n$$(P \\Rightarrow Q) \\equiv (\\neg Q \\Rightarrow \\neg P)$$ | Contraposée : utile quand la preuve directe est difficile',
           pointerPath: [
-            { line_number: 1, label: 'Formule clé' },
-            { line_number: 2, label: 'Propriété' },
+            { line_number: 1, label: 'Point de départ' },
+            { line_number: 2, label: 'Condition ou loi' },
+            { line_number: 3, label: 'Étape suivante' },
           ],
         }
       : {
@@ -168,7 +257,7 @@ function buildCourseSimulationSequence(
       step_number: 4,
       type: 'synthese',
       title: `À retenir · ${course.title}`,
-      content: `- **Cours** : ${course.code} (${course.professor_name})\n- **Priorité** : maîtriser ${targetMod?.title ?? course.title}\n- **Pratique** : refaire les exercices du syllabus`,
+      content: `- **Cours** : ${course.code} (${course.professor_name}) | Cadre officiel de référence\n- **Priorité** : maîtriser ${targetMod?.title ?? course.title} | Chaque étape repose sur la précédente\n- **Pratique** : refaire les exercices du syllabus | Fixer la méthode ligne par ligne`,
       pointerPath: [{ line_number: 2, label: 'Objectif clé' }],
     },
   ];
@@ -182,6 +271,8 @@ export default function App() {
   const [activeModuleId, setActiveModuleId] = useState<string | null>(launchParams.moduleId);
   const [isCourseMenuOpen, setIsCourseMenuOpen] = useState(false);
   const [isConnectingCourse, setIsConnectingCourse] = useState(false);
+  const [isUploadingPdf, setIsUploadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const [sessions, setSessions] = useState<LessonSession[]>([]);
   const [activeSession, setActiveSession] = useState<LessonSession | null>(null);
@@ -315,7 +406,7 @@ export default function App() {
     }
 
     const totalLines = extractBoardLines(targetStep).length;
-    if (totalLines > 1 && now - lastAutoAdvanceAtRef.current > 3200 && currentLine < totalLines) {
+    if (totalLines > 1 && now - lastAutoAdvanceAtRef.current > 4800 && currentLine < totalLines) {
       lastAutoAdvanceAtRef.current = now;
       setActivePointer({
         step_number: targetStep.step_number,
@@ -435,15 +526,22 @@ export default function App() {
               highlight: true,
             }),
           });
+          let stepLines: string[] = item.content
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean);
           if (res.ok) {
             const data = (await res.json()) as { step: BoardStep; steps: BoardStep[] };
             const sig = buildStepSignature(data.step);
             seenSignaturesRef.current.add(sig);
             setAnimatedStepSignatures((prev) => new Set(prev).add(sig));
             setSteps(data.steps);
+            stepLines = extractBoardLines(data.step);
           }
 
-          await new Promise((r) => window.setTimeout(r, 1750));
+          // Wait for the slow chalk handwriting animation to finish plus a calm reading pause
+          const writeMs = estimateChalkWritingDurationMs(item.title, stepLines);
+          await new Promise((r) => window.setTimeout(r, writeMs + 750));
 
           for (const pt of item.pointerPath) {
             setActivePointer({
@@ -451,7 +549,7 @@ export default function App() {
               line_number: pt.line_number,
               label: pt.label,
             });
-            await new Promise((r) => window.setTimeout(r, 650));
+            await new Promise((r) => window.setTimeout(r, 1850));
           }
         }
         await refreshSessionsList();
@@ -512,8 +610,8 @@ export default function App() {
           ? course.modules.find((m) => m.id === moduleId)
           : undefined;
         const explanationPrompt = targetModule
-          ? `Explique-moi le chapitre "${targetModule.title}" du cours "${course.title}" (${course.code}). Écris l'essentiel au tableau étape par étape (avec formule ou schéma et un bloc exemple concret), et guide-moi avec ton pointeur.`
-          : `Explique-moi le cours "${course.title}" (${course.code}) selon le programme. Commence par les notions fondamentales au tableau avec un bloc exemple concret et utilise ton pointeur pour me guider.`;
+          ? `Explique-moi très calmement et lentement le chapitre "${targetModule.title}" du cours "${course.title}" (${course.code}). Écris d'abord une étape courte au tableau (en justifiant chaque ligne de calcul avec \`Formule | Pourquoi\`), marque une pause, puis explique-la ligne par ligne avec ton pointeur avant de passer à la suite.`
+          : `Explique-moi très calmement et lentement le cours "${course.title}" (${course.code}) selon le programme. Écris d'abord une étape courte au tableau (avec \`Opération | Pourquoi\` pour chaque ligne), marque une pause, puis explique-la posément ligne par ligne avec ton pointeur.`;
 
         const sent = await sendTextPrompt(explanationPrompt, {
           sessionId: targetSessionId,
@@ -543,6 +641,129 @@ export default function App() {
       await runSimulationSequence(targetSessionId, seq);
     },
     [connectCourseAndExplain, runSimulationSequence],
+  );
+
+  const handleUploadPdfForCourse = useCallback(
+    async (file: File, targetCourseId?: string): Promise<CourseItem | null> => {
+      if (file.size > 10 * 1024 * 1024) {
+        setPdfError('Le fichier dépasse la limite de 10 Mo.');
+        return null;
+      }
+
+      setPdfError(null);
+      setIsUploadingPdf(true);
+      try {
+        const dataBase64 = await fileToBase64(file);
+        const mimeType = inferDocumentMimeType(file);
+        const endpoint = targetCourseId
+          ? `/api/courses/${encodeURIComponent(targetCourseId)}/pdf`
+          : '/api/courses/import-pdf';
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: file.name,
+            mimeType,
+            dataBase64,
+          }),
+        });
+
+        if (!res.ok) {
+          const errPayload = (await res.json().catch(() => ({}))) as { detail?: string };
+          setPdfError(errPayload.detail || 'Impossible de lire et analyser ce document.');
+          return null;
+        }
+
+        const updatedCourse = (await res.json()) as CourseItem;
+        await refreshCoursesList();
+
+        const currentSessionId = activeSessionRef.current?.id;
+        if (currentSessionId) {
+          const linkRes = await fetch(
+            `/api/sessions/${encodeURIComponent(currentSessionId)}/connect-course/`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ course_id: updatedCourse.id }),
+            },
+          );
+          if (linkRes.ok) {
+            const updatedSession = (await linkRes.json()) as LessonSession;
+            setActiveSession(updatedSession);
+            setActiveModuleId(null);
+            await refreshSessionsList();
+            postToReactNative({
+              type: 'COURSE_CONNECTED',
+              sessionId: updatedSession.id,
+              course: updatedCourse,
+              moduleId: null,
+            });
+          }
+        }
+
+        return updatedCourse;
+      } catch (err) {
+        setPdfError(
+          err instanceof Error ? err.message : 'Erreur lors de la lecture du document PDF.',
+        );
+        return null;
+      } finally {
+        setIsUploadingPdf(false);
+      }
+    },
+    [refreshCoursesList, refreshSessionsList],
+  );
+
+  const handleExplainPdfExercise = useCallback(
+    async (course: CourseItem, exercise: PdfExerciseItem) => {
+      const targetSessionId = activeSessionRef.current?.id;
+      if (!targetSessionId) return;
+
+      setIsConnectingCourse(true);
+      try {
+        await connectCourseAndExplain(course, null, {
+          shouldExplain: false,
+          sessionIdOverride: targetSessionId,
+        });
+
+        await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/clear/`, {
+          method: 'POST',
+        });
+        seenSignaturesRef.current = new Set();
+        setAnimatedStepSignatures(new Set());
+        setSteps([]);
+        setActivePointer(null);
+        setIsCourseMenuOpen(false);
+
+        const profile = course.pdf_profile;
+        const promptParts = [
+          `Travaillons lentement et clairement, exactement comme dans le document "${profile?.filename ?? course.title}".`,
+          `1) Écris d'abord uniquement l'énoncé fidèle (titre "${exercise.title}") au tableau :`,
+          `"""\n${exercise.statement}\n"""`,
+          `2) Ensuite, résous ce travail très calmement ligne par ligne en justifiant chaque étape (\`Ligne ou calcul | Pourquoi on fait cela\`), tout en imitant le style rédactionnel (${profile?.writing_style ?? 'style académique du PDF'}), les notations (${profile?.notation_conventions ?? 'notations du PDF'}) et la démarche (${exercise.method_steps.join(' -> ') || profile?.methodology_pattern || 'démarche du PDF'}). Explique chaque ligne posément avec ton pointeur.`,
+        ];
+        if (exercise.exact_format_sample) {
+          promptParts.push(
+            `Respecte ce format exact d'écriture au tableau :\n${exercise.exact_format_sample}`,
+          );
+        }
+
+        const sent = await sendTextPrompt(promptParts.join('\n\n'), {
+          sessionId: targetSessionId,
+          courseId: course.id,
+          moduleId: null,
+        });
+
+        if (!sent) {
+          const seq = buildExerciseSimulationSequence(course, exercise);
+          await runSimulationSequence(targetSessionId, seq);
+        }
+      } finally {
+        setIsConnectingCourse(false);
+      }
+    },
+    [connectCourseAndExplain, runSimulationSequence, sendTextPrompt],
   );
 
   useEffect(() => {
@@ -943,12 +1164,14 @@ export default function App() {
             micLevel={micLevel}
             errorMessage={errorMessage}
             transcripts={transcripts}
-            isSimulating={isSimulating}
             isConnectingCourse={isConnectingCourse}
+            isUploadingPdf={isUploadingPdf}
+            pdfError={pdfError}
             onOpenCourseMenu={() => setIsCourseMenuOpen(true)}
             onQuickExplainCourse={(course, moduleId) => {
               void connectCourseAndExplain(course, moduleId, { shouldExplain: true });
             }}
+            onUploadPdfForCourse={handleUploadPdfForCourse}
             onSelectSession={handleSelectSession}
             onCreateSession={handleCreateSession}
             onDeleteSession={handleDeleteSession}
@@ -960,10 +1183,6 @@ export default function App() {
             onDisconnect={disconnect}
             onToggleMic={() => {
               void toggleMicrophone();
-            }}
-            onSendPrompt={sendTextPrompt}
-            onRunSimulation={() => {
-              void handleRunSimulation();
             }}
             onClearTranscripts={clearTranscripts}
           />
@@ -1003,12 +1222,16 @@ export default function App() {
         activeCourseId={activeCourse?.id ?? null}
         activeModuleId={activeModuleId}
         isConnectingCourse={isConnectingCourse}
+        isUploadingPdf={isUploadingPdf}
+        pdfError={pdfError}
         onClose={() => setIsCourseMenuOpen(false)}
         onConnectAndExplain={async (course, moduleId) => {
           await connectCourseAndExplain(course, moduleId, { shouldExplain: true });
         }}
+        onExplainPdfExercise={handleExplainPdfExercise}
         onSimulateCourse={handleSimulateCourse}
         onDisconnectCourse={handleDisconnectCourse}
+        onUploadPdfForCourse={handleUploadPdfForCourse}
         onCreateCourse={handleCreateCourse}
         onDeleteCourse={handleDeleteCourse}
       />

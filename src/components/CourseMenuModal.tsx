@@ -1,8 +1,10 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
+  AlertCircle,
   BookMarked,
   Check,
   Copy,
+  FileText,
   Link2,
   Loader2,
   Play,
@@ -11,9 +13,10 @@ import {
   Sparkles,
   Trash2,
   Unlink,
+  Upload,
   X,
 } from 'lucide-react';
-import type { CourseItem } from '../types/board.ts';
+import type { CourseItem, PdfExerciseItem } from '../types/board.ts';
 
 interface CourseMenuModalProps {
   isOpen: boolean;
@@ -21,10 +24,14 @@ interface CourseMenuModalProps {
   activeCourseId: string | null;
   activeModuleId: string | null;
   isConnectingCourse: boolean;
+  isUploadingPdf: boolean;
+  pdfError: string | null;
   onClose: () => void;
   onConnectAndExplain: (course: CourseItem, moduleId: string | null) => Promise<void>;
+  onExplainPdfExercise: (course: CourseItem, exercise: PdfExerciseItem) => Promise<void>;
   onSimulateCourse: (course: CourseItem, moduleId: string | null) => Promise<void>;
   onDisconnectCourse: () => Promise<void>;
+  onUploadPdfForCourse: (file: File, targetCourseId?: string) => Promise<CourseItem | null>;
   onCreateCourse: (payload: {
     code: string;
     title: string;
@@ -41,10 +48,14 @@ export function CourseMenuModal({
   activeCourseId,
   activeModuleId,
   isConnectingCourse,
+  isUploadingPdf,
+  pdfError,
   onClose,
   onConnectAndExplain,
+  onExplainPdfExercise,
   onSimulateCourse,
   onDisconnectCourse,
+  onUploadPdfForCourse,
   onCreateCourse,
   onDeleteCourse,
 }: CourseMenuModalProps) {
@@ -55,6 +66,8 @@ export function CourseMenuModal({
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(activeModuleId);
   const [search, setSearch] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const attachPdfInputRef = useRef<HTMLInputElement | null>(null);
+  const createPdfInputRef = useRef<HTMLInputElement | null>(null);
 
   // Create custom course form state
   const [newCode, setNewCode] = useState('');
@@ -124,6 +137,21 @@ export function CourseMenuModal({
       }
     } finally {
       setIsSavingCourse(false);
+    }
+  };
+
+  const handleAttachPdfChange = async (
+    e: ChangeEvent<HTMLInputElement>,
+    targetCourseId?: string,
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const updated = await onUploadPdfForCourse(file, targetCourseId);
+    if (updated) {
+      setSelectedId(updated.id);
+      setSelectedModuleId(null);
+      setActiveTab('catalog');
     }
   };
 
@@ -346,6 +374,110 @@ export function ProfesseurTableauScreen({ courseId, moduleId }) {
                       {inspectedCourse.summary}
                     </p>
 
+                    {/* PDF Style & Exercise Adaptation Section */}
+                    <div className="rounded-lg bg-[#FAF9F6] border border-[#E5E0D5] p-3.5 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileText className="w-4 h-4 text-sky-700 shrink-0" />
+                          <span className="text-xs font-semibold text-stone-900 truncate">
+                            {inspectedCourse.pdf_profile
+                              ? `PDF adapté : ${inspectedCourse.pdf_profile.filename}`
+                              : 'Adapter le professeur à un PDF du cours'}
+                          </span>
+                        </div>
+
+                        <div>
+                          <input
+                            ref={attachPdfInputRef}
+                            type="file"
+                            accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+                            onChange={(e) => {
+                              void handleAttachPdfChange(e, inspectedCourse.id);
+                            }}
+                            className="hidden"
+                          />
+                          <button
+                            type="button"
+                            disabled={isUploadingPdf}
+                            onClick={() => attachPdfInputRef.current?.click()}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-white border border-[#D6D0C4] text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors cursor-pointer"
+                          >
+                            {isUploadingPdf ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Upload className="w-3.5 h-3.5 text-sky-700" />
+                            )}
+                            <span>
+                              {isUploadingPdf
+                                ? 'Lecture du PDF…'
+                                : inspectedCourse.pdf_profile
+                                  ? 'Changer le PDF'
+                                  : 'Lire un PDF'}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {pdfError && (
+                        <div className="rounded-md bg-red-50 border border-red-200 px-2.5 py-2 text-xs text-red-800 flex items-start gap-1.5">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                          <span>{pdfError}</span>
+                        </div>
+                      )}
+
+                      {inspectedCourse.pdf_profile ? (
+                        <div className="space-y-2 text-xs text-stone-700">
+                          <p>
+                            <strong className="text-stone-900">Style appris :</strong>{' '}
+                            {inspectedCourse.pdf_profile.writing_style}
+                          </p>
+                          <p>
+                            <strong className="text-stone-900">Démarche :</strong>{' '}
+                            {inspectedCourse.pdf_profile.methodology_pattern}
+                          </p>
+
+                          {inspectedCourse.pdf_profile.exercises.length > 0 && (
+                            <div className="pt-1 space-y-1.5">
+                              <p className="font-semibold text-stone-900">
+                                Travaux & exercices du PDF ({inspectedCourse.pdf_profile.exercises.length}) :
+                              </p>
+                              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                                {inspectedCourse.pdf_profile.exercises.map((ex, idx) => (
+                                  <div
+                                    key={idx}
+                                    className="rounded-md bg-white border border-[#E5E0D5] p-2.5 flex items-start justify-between gap-2"
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="font-semibold text-stone-900 truncate">
+                                        {ex.title}
+                                      </p>
+                                      <p className="text-[11px] text-stone-600 line-clamp-2 mt-0.5">
+                                        {ex.statement}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      disabled={isConnectingCourse}
+                                      onClick={() => {
+                                        void onExplainPdfExercise(inspectedCourse, ex);
+                                      }}
+                                      className="px-2.5 py-1 rounded text-[11px] font-medium bg-stone-900 text-white hover:bg-stone-800 whitespace-nowrap shrink-0 cursor-pointer"
+                                    >
+                                      Recopier & résoudre
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-stone-500 leading-relaxed">
+                          Chargez votre syllabus, TD ou TP en PDF : le professeur analysera son style rédactionnel, ses notations et recopiera les exercices de la même façon au tableau.
+                        </p>
+                      )}
+                    </div>
+
                     {/* Chapter / Module Selector */}
                     <div className="space-y-2">
                       <p className="text-xs font-semibold text-stone-700">
@@ -430,10 +562,56 @@ export function ProfesseurTableauScreen({ courseId, moduleId }) {
           )}
 
           {activeTab === 'create' && (
-            <form
-              onSubmit={handleCreateSubmit}
-              className="max-w-2xl mx-auto rounded-xl bg-white border border-[#E5E0D5] p-5 space-y-4"
-            >
+            <div className="max-w-2xl mx-auto space-y-4">
+              {/* Direct PDF Import Card */}
+              <div className="rounded-xl bg-white border border-[#E5E0D5] p-5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <h3 className="text-sm font-semibold text-stone-950 flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-sky-700" />
+                      <span>Créer directement depuis un PDF de cours ou TD</span>
+                    </h3>
+                    <p className="text-xs text-stone-600">
+                      Le professeur lit le PDF, apprend son style d’écriture, sa méthodologie et extrait les exercices pour les recopier à l’identique au tableau.
+                    </p>
+                  </div>
+                  <div>
+                    <input
+                      ref={createPdfInputRef}
+                      type="file"
+                      accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+                      onChange={(e) => {
+                        void handleAttachPdfChange(e);
+                      }}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      disabled={isUploadingPdf}
+                      onClick={() => createPdfInputRef.current?.click()}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium bg-sky-700 text-white hover:bg-sky-800 disabled:opacity-50 transition-colors cursor-pointer"
+                    >
+                      {isUploadingPdf ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isUploadingPdf ? 'Analyse du PDF…' : 'Choisir un PDF'}</span>
+                    </button>
+                  </div>
+                </div>
+                {pdfError && (
+                  <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{pdfError}</span>
+                  </div>
+                )}
+              </div>
+
+              <form
+                onSubmit={handleCreateSubmit}
+                className="rounded-xl bg-white border border-[#E5E0D5] p-5 space-y-4"
+              >
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-stone-600 mb-1">Code</label>
@@ -523,6 +701,7 @@ export function ProfesseurTableauScreen({ courseId, moduleId }) {
                 </button>
               </div>
             </form>
+            </div>
           )}
 
           {activeTab === 'react-native' && (
