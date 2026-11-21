@@ -19,6 +19,25 @@ import {
   extractBoardLines,
   findBestMatchingLine,
 } from './utils/professorTracker.ts';
+import type { User } from 'firebase/auth';
+import {
+  clearCloudBoardSteps,
+  createOrEnsureCloudSession,
+  deleteCloudCourse,
+  deleteCloudSession,
+  ensureCloudUserProfile,
+  fetchCloudCourses,
+  fetchCloudSessionSteps,
+  saveCloudCourse,
+  signInWithGoogle,
+  signOutFromCloud,
+  subscribeToCloudAuth,
+  subscribeToCloudSessions,
+  syncCloudSessionSnapshot,
+  testFirestoreConnection,
+  updateCloudSessionMeta,
+  upsertCloudBoardStep,
+} from './utils/firebase.ts';
 import {
   parseInitialLaunchParams,
   postToReactNative,
@@ -285,6 +304,10 @@ export default function App() {
   const [isLoadingBoard, setIsLoadingBoard] = useState(true);
   const [isSimulating, setIsSimulating] = useState(false);
 
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+
   const stepsRef = useRef<BoardStep[]>([]);
   const seenSignaturesRef = useRef<Set<string>>(new Set());
   const activePointerRef = useRef<BoardPointer | null>(null);
@@ -292,6 +315,9 @@ export default function App() {
   const lastAutoAdvanceAtRef = useRef<number>(0);
   const activeSessionRef = useRef<LessonSession | null>(null);
   const coursesRef = useRef<CourseItem[]>([]);
+  const sessionsRef = useRef<LessonSession[]>([]);
+  const cloudUserRef = useRef<User | null>(null);
+  const selectedVoiceRef = useRef<string>('Charon');
 
   useEffect(() => {
     stepsRef.current = steps;
@@ -308,6 +334,18 @@ export default function App() {
   useEffect(() => {
     coursesRef.current = courses;
   }, [courses]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    cloudUserRef.current = cloudUser;
+  }, [cloudUser]);
+
+  useEffect(() => {
+    selectedVoiceRef.current = selectedVoice;
+  }, [selectedVoice]);
 
   const activeCourse = useMemo(() => {
     if (!activeSession?.course_id) return null;
@@ -347,6 +385,17 @@ export default function App() {
         sessionId: updatedSteps[0].session_id,
         steps: updatedSteps,
       });
+
+      const uid = cloudUserRef.current?.uid;
+      const currentSess = activeSessionRef.current;
+      if (uid && currentSess && currentSess.id === updatedSteps[0].session_id) {
+        void syncCloudSessionSnapshot(
+          uid,
+          currentSess,
+          updatedSteps,
+          selectedVoiceRef.current,
+        );
+      }
     }
   }, []);
 
@@ -478,9 +527,19 @@ export default function App() {
   const loadSessionDetail = useCallback(async (sessionId: string) => {
     setIsLoadingBoard(true);
     try {
+      let detail: LessonSession | null = null;
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/`);
-      if (!res.ok) return null;
-      const detail = (await res.json()) as LessonSession;
+      if (res.ok) {
+        detail = (await res.json()) as LessonSession;
+      } else if (cloudUserRef.current?.uid) {
+        const cloudSessionMeta = sessionsRef.current.find((s) => s.id === sessionId);
+        if (cloudSessionMeta) {
+          const cloudSteps = await fetchCloudSessionSteps(cloudUserRef.current.uid, sessionId);
+          detail = { ...cloudSessionMeta, steps: cloudSteps };
+        }
+      }
+
+      if (!detail) return null;
       setActiveSession(detail);
       const loadedSteps = detail.steps ?? [];
 
@@ -509,6 +568,9 @@ export default function App() {
         await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/clear/`, {
           method: 'POST',
         });
+        if (cloudUserRef.current?.uid) {
+          void clearCloudBoardSteps(cloudUserRef.current.uid, sessionId);
+        }
         seenSignaturesRef.current = new Set();
         setAnimatedStepSignatures(new Set());
         setSteps([]);
@@ -537,6 +599,15 @@ export default function App() {
             setAnimatedStepSignatures((prev) => new Set(prev).add(sig));
             setSteps(data.steps);
             stepLines = extractBoardLines(data.step);
+
+            if (cloudUserRef.current?.uid && activeSessionRef.current) {
+              void upsertCloudBoardStep(
+                cloudUserRef.current.uid,
+                activeSessionRef.current,
+                data.step,
+                selectedVoiceRef.current,
+              );
+            }
           }
 
           // Wait for the slow chalk handwriting animation to finish plus a calm reading pause
@@ -551,6 +622,14 @@ export default function App() {
             });
             await new Promise((r) => window.setTimeout(r, 1850));
           }
+        }
+        if (cloudUserRef.current?.uid && activeSessionRef.current) {
+          void syncCloudSessionSnapshot(
+            cloudUserRef.current.uid,
+            activeSessionRef.current,
+            stepsRef.current,
+            selectedVoiceRef.current,
+          );
         }
         await refreshSessionsList();
       } finally {
@@ -586,6 +665,15 @@ export default function App() {
         setActiveModuleId(moduleId);
         await refreshSessionsList();
 
+        if (cloudUserRef.current?.uid) {
+          void saveCloudCourse(cloudUserRef.current.uid, course);
+          void updateCloudSessionMeta(cloudUserRef.current.uid, updatedSession.id, {
+            courseId: course.id,
+            courseTitle: course.title,
+            courseCode: course.code,
+          });
+        }
+
         postToReactNative({
           type: 'COURSE_CONNECTED',
           sessionId: updatedSession.id,
@@ -601,6 +689,9 @@ export default function App() {
         await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/clear/`, {
           method: 'POST',
         });
+        if (cloudUserRef.current?.uid) {
+          void clearCloudBoardSteps(cloudUserRef.current.uid, targetSessionId);
+        }
         seenSignaturesRef.current = new Set();
         setAnimatedStepSignatures(new Set());
         setSteps([]);
@@ -678,6 +769,10 @@ export default function App() {
         const updatedCourse = (await res.json()) as CourseItem;
         await refreshCoursesList();
 
+        if (cloudUserRef.current?.uid) {
+          void saveCloudCourse(cloudUserRef.current.uid, updatedCourse);
+        }
+
         const currentSessionId = activeSessionRef.current?.id;
         if (currentSessionId) {
           const linkRes = await fetch(
@@ -693,6 +788,13 @@ export default function App() {
             setActiveSession(updatedSession);
             setActiveModuleId(null);
             await refreshSessionsList();
+            if (cloudUserRef.current?.uid) {
+              void updateCloudSessionMeta(cloudUserRef.current.uid, updatedSession.id, {
+                courseId: updatedCourse.id,
+                courseTitle: updatedCourse.title,
+                courseCode: updatedCourse.code,
+              });
+            }
             postToReactNative({
               type: 'COURSE_CONNECTED',
               sessionId: updatedSession.id,
@@ -850,6 +952,97 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Firebase Auth listener & Cloud Firestore synchronization
+  useEffect(() => {
+    void testFirestoreConnection();
+    const unsubAuth = subscribeToCloudAuth((user) => {
+      setCloudUser(user);
+      if (user) {
+        void ensureCloudUserProfile(user);
+      }
+    });
+    return () => {
+      unsubAuth();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!cloudUser?.uid) return;
+    const uid = cloudUser.uid;
+    let active = true;
+
+    void fetchCloudCourses(uid).then((cloudCourses) => {
+      if (!active || cloudCourses.length === 0) return;
+      setCourses((prev) => {
+        const existingIds = new Set(prev.map((c) => c.id));
+        const additions = cloudCourses.filter((c) => !existingIds.has(c.id));
+        return additions.length > 0 ? [...prev, ...additions] : prev;
+      });
+    });
+
+    const unsubSessions = subscribeToCloudSessions(uid, (cloudSessions) => {
+      if (!active) return;
+      if (cloudSessions.length === 0) {
+        const currentSess = activeSessionRef.current;
+        if (currentSess) {
+          void syncCloudSessionSnapshot(
+            uid,
+            currentSess,
+            stepsRef.current,
+            selectedVoiceRef.current,
+          );
+        }
+        return;
+      }
+      setSessions((prev) => {
+        const map = new Map<string, LessonSession>();
+        for (const item of prev) map.set(item.id, item);
+        for (const cs of cloudSessions) {
+          if (!map.has(cs.id)) {
+            map.set(cs.id, cs);
+          }
+        }
+        return Array.from(map.values());
+      });
+    });
+
+    return () => {
+      active = false;
+      unsubSessions();
+    };
+  }, [cloudUser?.uid]);
+
+  const handleSignInCloud = useCallback(async () => {
+    setCloudError(null);
+    setIsCloudSyncing(true);
+    try {
+      const user = await signInWithGoogle();
+      await ensureCloudUserProfile(user);
+      if (activeSessionRef.current) {
+        await syncCloudSessionSnapshot(
+          user.uid,
+          activeSessionRef.current,
+          stepsRef.current,
+          selectedVoiceRef.current,
+        );
+      }
+      for (const course of coursesRef.current.slice(0, 12)) {
+        await saveCloudCourse(user.uid, course);
+      }
+    } catch (err) {
+      setCloudError(
+        err instanceof Error ? err.message : 'Connexion Google Cloud annulée ou impossible.',
+      );
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  }, []);
+
+  const handleSignOutCloud = useCallback(async () => {
+    setCloudError(null);
+    await signOutFromCloud();
+  }, []);
+
   // Subscribe to bidirectional commands from React Native / Expo WebView
   useEffect(() => {
     return subscribeToReactNativeCommands(async (cmd) => {
@@ -922,6 +1115,9 @@ export default function App() {
     });
     if (!res.ok) return;
     const created = (await res.json()) as LessonSession;
+    if (cloudUserRef.current?.uid) {
+      void createOrEnsureCloudSession(cloudUserRef.current.uid, created, selectedVoiceRef.current);
+    }
     await refreshSessionsList();
     setActiveSession(created);
     setSteps(created.steps ?? []);
@@ -936,6 +1132,9 @@ export default function App() {
     const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/`, {
       method: 'DELETE',
     });
+    if (cloudUserRef.current?.uid) {
+      void deleteCloudSession(cloudUserRef.current.uid, sessionId);
+    }
     if (!res.ok) return;
 
     const updated = await refreshSessionsList();
@@ -958,6 +1157,9 @@ export default function App() {
     if (!res.ok) return;
     const updated = (await res.json()) as LessonSession;
     setActiveSession(updated);
+    if (cloudUserRef.current?.uid) {
+      void updateCloudSessionMeta(cloudUserRef.current.uid, updated.id, { title: newTitle });
+    }
     await refreshSessionsList();
   };
 
@@ -971,6 +1173,9 @@ export default function App() {
     setAnimatedStepSignatures(new Set());
     setSteps([]);
     setActivePointer(null);
+    if (cloudUserRef.current?.uid) {
+      void clearCloudBoardSteps(cloudUserRef.current.uid, activeSession.id);
+    }
     await refreshSessionsList();
   };
 
@@ -990,6 +1195,14 @@ export default function App() {
     if (!res.ok) return;
     const data = (await res.json()) as { steps: BoardStep[] };
     setSteps(data.steps);
+    if (cloudUserRef.current?.uid) {
+      void syncCloudSessionSnapshot(
+        cloudUserRef.current.uid,
+        activeSession,
+        data.steps,
+        selectedVoiceRef.current,
+      );
+    }
   };
 
   const handleRunSimulation = async () => {
@@ -1011,6 +1224,13 @@ export default function App() {
     const updated = (await res.json()) as LessonSession;
     setActiveSession(updated);
     setActiveModuleId(null);
+    if (cloudUserRef.current?.uid) {
+      void updateCloudSessionMeta(cloudUserRef.current.uid, updated.id, {
+        courseId: '',
+        courseTitle: '',
+        courseCode: '',
+      });
+    }
     await refreshSessionsList();
     postToReactNative({
       type: 'COURSE_CONNECTED',
@@ -1051,6 +1271,9 @@ export default function App() {
     });
     if (!res.ok) return null;
     const created = (await res.json()) as CourseItem;
+    if (cloudUserRef.current?.uid) {
+      void saveCloudCourse(cloudUserRef.current.uid, created);
+    }
     await refreshCoursesList();
     return created;
   };
@@ -1059,6 +1282,9 @@ export default function App() {
     const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/`, {
       method: 'DELETE',
     });
+    if (cloudUserRef.current?.uid) {
+      void deleteCloudCourse(cloudUserRef.current.uid, courseId);
+    }
     if (!res.ok) return;
     if (activeSession?.course_id === courseId) {
       await handleDisconnectCourse();
@@ -1126,7 +1352,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setIsCourseMenuOpen(true)}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs sm:text-sm font-medium text-stone-800 bg-[#FAF9F6] border border-[#D6D0C4] rounded-lg hover:bg-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="min-h-[44px] inline-flex items-center gap-2 px-3.5 py-2 text-xs sm:text-sm font-medium text-stone-800 bg-[#FAF9F6] border border-[#D6D0C4] rounded-lg hover:bg-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <BookMarked className="w-4 h-4 text-sky-700" />
             <span className="max-w-[140px] truncate">
@@ -1138,7 +1364,7 @@ export default function App() {
             <button
               type="button"
               onClick={handleCreateSession}
-              className="hidden sm:inline-flex px-4 py-2 text-xs sm:text-sm font-medium text-white bg-stone-900 rounded-lg hover:bg-stone-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="hidden sm:inline-flex min-h-[44px] items-center px-4 py-2 text-xs sm:text-sm font-medium text-white bg-stone-900 rounded-lg hover:bg-stone-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               Nouvelle séance
             </button>
@@ -1185,6 +1411,16 @@ export default function App() {
               void toggleMicrophone();
             }}
             onClearTranscripts={clearTranscripts}
+            cloudUserEmail={cloudUser?.email ?? null}
+            cloudUserName={cloudUser?.displayName ?? null}
+            isCloudSyncing={isCloudSyncing}
+            cloudError={cloudError}
+            onSignInCloud={() => {
+              void handleSignInCloud();
+            }}
+            onSignOutCloud={() => {
+              void handleSignOutCloud();
+            }}
           />
         )}
 

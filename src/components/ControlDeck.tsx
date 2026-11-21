@@ -13,7 +13,9 @@ import {
   Plus,
   AlertCircle,
   CheckCircle2,
+  Cloud,
   Loader2,
+  LogOut,
 } from 'lucide-react';
 import type {
   CourseItem,
@@ -53,6 +55,12 @@ interface ControlDeckProps {
   onDisconnect: () => void;
   onToggleMic: () => void;
   onClearTranscripts: () => void;
+  cloudUserEmail?: string | null;
+  cloudUserName?: string | null;
+  isCloudSyncing?: boolean;
+  cloudError?: string | null;
+  onSignInCloud?: () => void;
+  onSignOutCloud?: () => void;
 }
 
 export function ControlDeck({
@@ -85,6 +93,12 @@ export function ControlDeck({
   onDisconnect,
   onToggleMic,
   onClearTranscripts,
+  cloudUserEmail = null,
+  cloudUserName = null,
+  isCloudSyncing = false,
+  cloudError = null,
+  onSignInCloud,
+  onSignOutCloud,
 }: ControlDeckProps) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
@@ -169,7 +183,7 @@ export function ControlDeck({
                   type="button"
                   disabled={isConnectingCourse || !activeSessionId}
                   onClick={() => onQuickExplainCourse(activeCourse, activeModuleId)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-stone-900 text-white hover:bg-stone-800 disabled:opacity-50 transition-colors cursor-pointer"
+                  className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-stone-900 text-white hover:bg-stone-800 disabled:opacity-50 transition-colors cursor-pointer"
                 >
                   {isConnectingCourse ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -184,7 +198,7 @@ export function ControlDeck({
                   disabled={isUploadingPdf}
                   onClick={() => pdfInputRef.current?.click()}
                   title="Lire un PDF pour adapter le style et les exercices du professeur"
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[#D6D0C4] bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[#D6D0C4] bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {isUploadingPdf ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -210,7 +224,7 @@ export function ControlDeck({
                 <button
                   type="button"
                   onClick={onOpenCourseMenu}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-sky-700 text-white hover:bg-sky-800 transition-colors cursor-pointer"
+                  className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-sky-700 text-white hover:bg-sky-800 transition-colors cursor-pointer"
                 >
                   <BookMarked className="w-3.5 h-3.5" />
                   <span>Choisir un cours</span>
@@ -219,7 +233,7 @@ export function ControlDeck({
                   type="button"
                   disabled={isUploadingPdf}
                   onClick={() => pdfInputRef.current?.click()}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[#D6D0C4] bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-[#D6D0C4] bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {isUploadingPdf ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -265,11 +279,11 @@ export function ControlDeck({
                   <button
                     type="button"
                     onClick={() => onSelectSession(session.id)}
-                    className="flex-1 text-left min-w-0 cursor-pointer"
+                    className="flex-1 text-left min-w-0 min-h-[40px] cursor-pointer"
                   >
                     <p className="text-sm font-medium truncate">{session.title}</p>
                     <p
-                      className={`text-xs mt-0.5 font-mono-code ${
+                      className={`text-xs mt-0.5 font-mono-code tabular-nums ${
                         isActive ? 'text-stone-300' : 'text-stone-500'
                       }`}
                     >
@@ -323,6 +337,46 @@ export function ControlDeck({
               );
             })}
           </div>
+
+          {(onSignInCloud || onSignOutCloud) && (
+            <div className="pt-2 border-t border-[#ECE7DD] space-y-2">
+              {cloudUserEmail ? (
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0 flex items-center gap-1.5 text-emerald-800">
+                    <Cloud className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate font-medium">
+                      {cloudUserName || cloudUserEmail}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onSignOutCloud}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium text-stone-600 hover:text-stone-900 hover:bg-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Déconnecter</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isCloudSyncing}
+                  onClick={onSignInCloud}
+                  className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border border-[#D6D0C4] bg-[#FAF9F6] text-stone-800 hover:bg-stone-100 disabled:opacity-60 transition-colors cursor-pointer"
+                >
+                  {isCloudSyncing ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Cloud className="w-3.5 h-3.5 text-sky-700" />
+                  )}
+                  <span>Sauvegarde Cloud Google (Firestore)</span>
+                </button>
+              )}
+              {cloudError && (
+                <p className="text-[11px] text-red-700 leading-snug">{cloudError}</p>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Section 2: Gemini Live Connection & Microphone */}
@@ -427,7 +481,7 @@ export function ControlDeck({
               <button
                 type="button"
                 onClick={onDisconnect}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 transition-colors whitespace-nowrap cursor-pointer"
+                className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 transition-colors whitespace-nowrap cursor-pointer"
               >
                 <PowerOff className="w-4 h-4" />
                 <span>Déconnecter</span>
@@ -437,7 +491,7 @@ export function ControlDeck({
                 type="button"
                 onClick={onConnect}
                 disabled={isConnecting || !activeSessionId}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-sky-700 text-white hover:bg-sky-800 disabled:opacity-60 transition-colors whitespace-nowrap cursor-pointer"
+                className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-sky-700 text-white hover:bg-sky-800 disabled:opacity-60 transition-colors whitespace-nowrap cursor-pointer"
               >
                 {isConnecting ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -452,7 +506,7 @@ export function ControlDeck({
               type="button"
               onClick={onToggleMic}
               disabled={!activeSessionId || isConnecting}
-              className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer disabled:opacity-60 ${
+              className={`min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer disabled:opacity-60 ${
                 isMicActive
                   ? 'bg-red-600 text-white hover:bg-red-700'
                   : 'bg-stone-900 text-white hover:bg-stone-800'
@@ -478,7 +532,7 @@ export function ControlDeck({
                 <div className="space-y-1">
                   <div className="flex items-center justify-between text-xs text-stone-600">
                     <span>Capture micro PCM 16 kHz mono</span>
-                    <span className="font-mono-code">{Math.round(micLevel * 100)}%</span>
+                    <span className="font-mono-code tabular-nums">{Math.round(micLevel * 100)}%</span>
                   </div>
                   <div className="h-1.5 rounded-full bg-stone-200 overflow-hidden">
                     <div

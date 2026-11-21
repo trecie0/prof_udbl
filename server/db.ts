@@ -1,7 +1,4 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import Database from 'better-sqlite3';
 import type {
   BoardStep,
   CourseItem,
@@ -11,104 +8,19 @@ import type {
   StepType,
 } from '../src/types/board.ts';
 
-const dataDir = path.resolve(process.cwd(), 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-const dbPath = path.join(dataDir, 'professeur.db');
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS courses (
-    id TEXT PRIMARY KEY,
-    code TEXT NOT NULL,
-    title TEXT NOT NULL,
-    professor_name TEXT NOT NULL DEFAULT 'Professeur UDBL',
-    level TEXT NOT NULL DEFAULT 'L1 Informatique & Ingénierie',
-    syllabus_title TEXT NOT NULL DEFAULT 'Syllabus officiel',
-    summary TEXT NOT NULL DEFAULT '',
-    modules_json TEXT NOT NULL DEFAULT '[]',
-    pdf_profile_json TEXT,
-    is_official INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS lesson_sessions (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    model_name TEXT NOT NULL DEFAULT 'gemini-3.8-live',
-    course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS board_steps (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    step_number INTEGER NOT NULL,
-    step_type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    highlight INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES lesson_sessions(id) ON DELETE CASCADE,
-    UNIQUE (session_id, step_number)
-  );
-`);
-
-// Safe migrations for existing databases
-const courseColumns = db.prepare('PRAGMA table_info(courses)').all() as Array<{ name: string }>;
-if (!courseColumns.some((col) => col.name === 'pdf_profile_json')) {
-  db.exec('ALTER TABLE courses ADD COLUMN pdf_profile_json TEXT');
-}
-
-const sessionColumns = db.prepare('PRAGMA table_info(lesson_sessions)').all() as Array<{ name: string }>;
-if (!sessionColumns.some((col) => col.name === 'course_id')) {
-  db.exec('ALTER TABLE lesson_sessions ADD COLUMN course_id TEXT REFERENCES courses(id) ON DELETE SET NULL');
-}
-
-interface RawCourseRow {
-  id: string;
-  code: string;
-  title: string;
-  professor_name: string;
-  level: string;
-  syllabus_title: string;
-  summary: string;
-  modules_json: string;
-  pdf_profile_json: string | null;
-  is_official: number;
-  created_at: string;
-  updated_at: string;
-}
-
-interface RawSessionRow {
+interface StoredSession {
   id: string;
   title: string;
   model_name: string;
   course_id: string | null;
-  course_title?: string | null;
-  course_code?: string | null;
   created_at: string;
   updated_at: string;
-  step_count?: number;
-  last_step_title?: string | null;
 }
 
-interface RawStepRow {
-  id: number;
-  session_id: string;
-  step_number: number;
-  step_type: string;
-  title: string;
-  content: string;
-  highlight: number;
-  created_at: string;
-}
+const coursesStore = new Map<string, CourseItem>();
+const sessionsStore = new Map<string, StoredSession>();
+const stepsBySessionStore = new Map<string, BoardStep[]>();
+let nextStepId = 1;
 
 const VALID_STEP_TYPES = new Set<StepType>(['etape', 'calcul', 'schema', 'code', 'exemple', 'synthese']);
 
@@ -118,66 +30,28 @@ export function normalizeStepType(input?: string): StepType {
   return VALID_STEP_TYPES.has(normalized) ? normalized : 'etape';
 }
 
-function parseModules(raw: string): CourseModule[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-      .map((item, idx) => ({
-        id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `mod-${idx + 1}`,
-        title: typeof item.title === 'string' && item.title.trim() ? item.title.trim() : `Chapitre ${idx + 1}`,
-        key_points: Array.isArray(item.key_points)
-          ? item.key_points.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
-          : [],
-        ...(typeof item.sample_prompt === 'string' && item.sample_prompt.trim()
-          ? { sample_prompt: item.sample_prompt.trim() }
-          : {}),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function parsePdfProfile(raw: string | null): PdfStyleProfile | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as PdfStyleProfile;
-    if (!parsed || typeof parsed !== 'object' || !parsed.filename) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function mapCourse(row: RawCourseRow): CourseItem {
+function cloneCourse(course: CourseItem): CourseItem {
   return {
-    id: row.id,
-    code: row.code,
-    title: row.title,
-    professor_name: row.professor_name,
-    level: row.level,
-    syllabus_title: row.syllabus_title,
-    summary: row.summary,
-    modules: parseModules(row.modules_json),
-    pdf_profile: parsePdfProfile(row.pdf_profile_json),
-    is_official: Boolean(row.is_official),
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+    ...course,
+    modules: course.modules.map((m) => ({
+      ...m,
+      key_points: [...m.key_points],
+    })),
+    pdf_profile: course.pdf_profile
+      ? {
+          ...course.pdf_profile,
+          exercises: course.pdf_profile.exercises.map((ex) => ({
+            ...ex,
+            method_steps: [...ex.method_steps],
+          })),
+          verbatim_excerpts: [...course.pdf_profile.verbatim_excerpts],
+        }
+      : null,
   };
 }
 
-function mapStep(row: RawStepRow): BoardStep {
-  return {
-    id: row.id,
-    session_id: row.session_id,
-    step_number: row.step_number,
-    step_type: normalizeStepType(row.step_type),
-    title: row.title,
-    content: row.content,
-    highlight: Boolean(row.highlight),
-    created_at: row.created_at,
-  };
+function cloneStep(step: BoardStep): BoardStep {
+  return { ...step };
 }
 
 const DEFAULT_UDBL_COURSES: Array<Omit<CourseItem, 'created_at' | 'updated_at'>> = [
@@ -367,51 +241,32 @@ const DEFAULT_UDBL_COURSES: Array<Omit<CourseItem, 'created_at' | 'updated_at'>>
 
 export function ensureDefaultCourses(): void {
   const now = new Date().toISOString();
-  const stmt = db.prepare(`
-    INSERT OR IGNORE INTO courses (
-      id, code, title, professor_name, level, syllabus_title, summary, modules_json, is_official, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const tx = db.transaction(() => {
-    for (const c of DEFAULT_UDBL_COURSES) {
-      stmt.run(
-        c.id,
-        c.code,
-        c.title,
-        c.professor_name,
-        c.level,
-        c.syllabus_title,
-        c.summary,
-        JSON.stringify(c.modules),
-        c.is_official ? 1 : 0,
-        now,
-        now,
-      );
+  for (const c of DEFAULT_UDBL_COURSES) {
+    if (!coursesStore.has(c.id)) {
+      coursesStore.set(c.id, {
+        ...c,
+        pdf_profile: null,
+        created_at: now,
+        updated_at: now,
+      });
     }
-  });
-  tx();
+  }
 }
 
 export function listCourses(): CourseItem[] {
-  const rows = db
-    .prepare(
-      `SELECT id, code, title, professor_name, level, syllabus_title, summary, modules_json, pdf_profile_json, is_official, created_at, updated_at
-       FROM courses
-       ORDER BY is_official DESC, title ASC`,
-    )
-    .all() as RawCourseRow[];
-  return rows.map(mapCourse);
+  return Array.from(coursesStore.values())
+    .sort((a, b) => {
+      if (a.is_official !== b.is_official) {
+        return a.is_official ? -1 : 1;
+      }
+      return a.title.localeCompare(b.title);
+    })
+    .map(cloneCourse);
 }
 
 export function getCourse(courseId: string): CourseItem | null {
-  const row = db
-    .prepare(
-      `SELECT id, code, title, professor_name, level, syllabus_title, summary, modules_json, pdf_profile_json, is_official, created_at, updated_at
-       FROM courses WHERE id = ?`,
-    )
-    .get(courseId) as RawCourseRow | undefined;
-  return row ? mapCourse(row) : null;
+  const course = coursesStore.get(courseId);
+  return course ? cloneCourse(course) : null;
 }
 
 export interface UpsertCourseInput {
@@ -435,45 +290,34 @@ export function upsertCourse(input: UpsertCourseInput): CourseItem {
       ? input.id.trim().replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64)
       : `custom-${crypto.randomUUID().slice(0, 8)}`;
 
+  const existing = coursesStore.get(id);
   const code = (input.code?.trim() || 'COURS-RN').toUpperCase().slice(0, 24);
   const professorName = input.professor_name?.trim() || 'Professeur UDBL';
   const level = input.level?.trim() || 'L1 Informatique & Ingénierie';
   const syllabusTitle = input.syllabus_title?.trim() || `Support de cours · ${cleanTitle}`;
   const summary = input.summary?.trim() || `Cours personnalisé connecté depuis l’application : ${cleanTitle}.`;
   const modules = Array.isArray(input.modules) ? input.modules : [];
-  const pdfProfileJson = input.pdf_profile ? JSON.stringify(input.pdf_profile) : null;
-  const isOfficial = input.is_official ? 1 : 0;
+  const pdfProfile =
+    input.pdf_profile !== undefined ? input.pdf_profile : existing?.pdf_profile ?? null;
+  const isOfficial = existing ? existing.is_official : Boolean(input.is_official);
 
-  db.prepare(`
-    INSERT INTO courses (
-      id, code, title, professor_name, level, syllabus_title, summary, modules_json, pdf_profile_json, is_official, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      code = excluded.code,
-      title = excluded.title,
-      professor_name = excluded.professor_name,
-      level = excluded.level,
-      syllabus_title = excluded.syllabus_title,
-      summary = excluded.summary,
-      modules_json = excluded.modules_json,
-      pdf_profile_json = COALESCE(excluded.pdf_profile_json, courses.pdf_profile_json),
-      updated_at = excluded.updated_at
-  `).run(
+  const saved: CourseItem = {
     id,
     code,
-    cleanTitle,
-    professorName,
+    title: cleanTitle,
+    professor_name: professorName,
     level,
-    syllabusTitle,
+    syllabus_title: syllabusTitle,
     summary,
-    JSON.stringify(modules),
-    pdfProfileJson,
-    isOfficial,
-    now,
-    now,
-  );
+    modules,
+    pdf_profile: pdfProfile ?? null,
+    is_official: isOfficial,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
 
-  return getCourse(id)!;
+  coursesStore.set(id, saved);
+  return cloneCourse(saved);
 }
 
 export function attachPdfProfileToCourse(
@@ -485,7 +329,7 @@ export function attachPdfProfileToCourse(
     syllabus_title?: string;
   },
 ): CourseItem | null {
-  const existing = getCourse(courseId);
+  const existing = coursesStore.get(courseId);
   if (!existing) return null;
 
   const now = new Date().toISOString();
@@ -498,73 +342,56 @@ export function attachPdfProfileToCourse(
       ? options.syllabus_title.trim()
       : `PDF adapté · ${profile.filename}`;
 
-  db.prepare(`
-    UPDATE courses
-    SET pdf_profile_json = ?,
-        summary = ?,
-        modules_json = ?,
-        syllabus_title = ?,
-        updated_at = ?
-    WHERE id = ?
-  `).run(
-    JSON.stringify(profile),
-    nextSummary,
-    JSON.stringify(nextModules),
-    nextSyllabusTitle,
-    now,
-    courseId,
-  );
+  const updated: CourseItem = {
+    ...existing,
+    pdf_profile: profile,
+    summary: nextSummary,
+    modules: nextModules,
+    syllabus_title: nextSyllabusTitle,
+    updated_at: now,
+  };
 
-  return getCourse(courseId);
+  coursesStore.set(courseId, updated);
+  return cloneCourse(updated);
 }
 
 export function deleteCourse(courseId: string): boolean {
-  const result = db.prepare('DELETE FROM courses WHERE id = ? AND is_official = 0').run(courseId);
-  return result.changes > 0;
+  const existing = coursesStore.get(courseId);
+  if (!existing || existing.is_official) {
+    return false;
+  }
+  coursesStore.delete(courseId);
+  for (const session of sessionsStore.values()) {
+    if (session.course_id === courseId) {
+      session.course_id = null;
+    }
+  }
+  return true;
 }
 
 export function listSessions(): LessonSession[] {
-  const rows = db
-    .prepare(
-      `
-      SELECT
-        s.id,
-        s.title,
-        s.model_name,
-        s.course_id,
-        c.title AS course_title,
-        c.code AS course_code,
-        s.created_at,
-        s.updated_at,
-        COUNT(b.id) AS step_count,
-        (
-          SELECT b2.title
-          FROM board_steps b2
-          WHERE b2.session_id = s.id
-          ORDER BY b2.highlight DESC, b2.step_number DESC
-          LIMIT 1
-        ) AS last_step_title
-      FROM lesson_sessions s
-      LEFT JOIN courses c ON c.id = s.course_id
-      LEFT JOIN board_steps b ON b.session_id = s.id
-      GROUP BY s.id
-      ORDER BY s.updated_at DESC
-    `,
-    )
-    .all() as RawSessionRow[];
-
-  return rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    model_name: row.model_name,
-    course_id: row.course_id ?? null,
-    course_title: row.course_title ?? null,
-    course_code: row.course_code ?? null,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-    step_count: Number(row.step_count ?? 0),
-    last_step_title: row.last_step_title ?? null,
-  }));
+  return Array.from(sessionsStore.values())
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .map((session) => {
+      const course = session.course_id ? coursesStore.get(session.course_id) : null;
+      const steps = stepsBySessionStore.get(session.id) ?? [];
+      const sortedForLast = [...steps].sort((a, b) => {
+        if (a.highlight !== b.highlight) return a.highlight ? -1 : 1;
+        return b.step_number - a.step_number;
+      });
+      return {
+        id: session.id,
+        title: session.title,
+        model_name: session.model_name,
+        course_id: course ? course.id : null,
+        course_title: course ? course.title : null,
+        course_code: course ? course.code : null,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
+        step_count: steps.length,
+        last_step_title: sortedForLast[0]?.title ?? null,
+      };
+    });
 }
 
 export function createSession(
@@ -574,18 +401,23 @@ export function createSession(
 ): LessonSession {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  const validCourse = courseId ? getCourse(courseId) : null;
-  const countRow = db.prepare('SELECT COUNT(*) as total FROM lesson_sessions').get() as { total: number };
+  const validCourse = courseId ? coursesStore.get(courseId) ?? null : null;
   const cleanTitle =
     title?.trim() ||
     (validCourse
       ? `Cours · ${validCourse.title}`
-      : `Séance ${countRow.total + 1} · Tableau interactif`);
+      : `Séance ${sessionsStore.size + 1} · Tableau interactif`);
 
-  db.prepare(
-    `INSERT INTO lesson_sessions (id, title, model_name, course_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(id, cleanTitle, modelName, validCourse?.id ?? null, now, now);
+  const stored: StoredSession = {
+    id,
+    title: cleanTitle,
+    model_name: modelName,
+    course_id: validCourse?.id ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+  sessionsStore.set(id, stored);
+  stepsBySessionStore.set(id, []);
 
   return {
     id,
@@ -603,54 +435,43 @@ export function createSession(
 }
 
 export function getSession(sessionId: string): LessonSession | null {
-  const session = db
-    .prepare(
-      `SELECT s.id, s.title, s.model_name, s.course_id, c.title AS course_title, c.code AS course_code, s.created_at, s.updated_at
-       FROM lesson_sessions s
-       LEFT JOIN courses c ON c.id = s.course_id
-       WHERE s.id = ?`,
-    )
-    .get(sessionId) as RawSessionRow | undefined;
-
+  const session = sessionsStore.get(sessionId);
   if (!session) return null;
 
-  const steps = db
-    .prepare(
-      `SELECT id, session_id, step_number, step_type, title, content, highlight, created_at
-       FROM board_steps
-       WHERE session_id = ?
-       ORDER BY step_number ASC, id ASC`,
-    )
-    .all(sessionId) as RawStepRow[];
+  const course = session.course_id ? coursesStore.get(session.course_id) ?? null : null;
+  const steps = [...(stepsBySessionStore.get(sessionId) ?? [])].sort((a, b) => {
+    if (a.step_number !== b.step_number) return a.step_number - b.step_number;
+    return a.id - b.id;
+  });
 
   return {
     id: session.id,
     title: session.title,
     model_name: session.model_name,
-    course_id: session.course_id ?? null,
-    course_title: session.course_title ?? null,
-    course_code: session.course_code ?? null,
+    course_id: course ? course.id : null,
+    course_title: course ? course.title : null,
+    course_code: course ? course.code : null,
     created_at: session.created_at,
     updated_at: session.updated_at,
     step_count: steps.length,
-    steps: steps.map(mapStep),
+    steps: steps.map(cloneStep),
   };
 }
 
 export function deleteSession(sessionId: string): boolean {
-  const result = db.prepare('DELETE FROM lesson_sessions WHERE id = ?').run(sessionId);
-  return result.changes > 0;
+  const deleted = sessionsStore.delete(sessionId);
+  stepsBySessionStore.delete(sessionId);
+  return deleted;
 }
 
 export function updateSessionTitle(sessionId: string, title: string): LessonSession | null {
+  const session = sessionsStore.get(sessionId);
+  if (!session) return null;
   const cleanTitle = title.trim();
   if (!cleanTitle) return getSession(sessionId);
-  const now = new Date().toISOString();
-  db.prepare('UPDATE lesson_sessions SET title = ?, updated_at = ? WHERE id = ?').run(
-    cleanTitle,
-    now,
-    sessionId,
-  );
+
+  session.title = cleanTitle;
+  session.updated_at = new Date().toISOString();
   return getSession(sessionId);
 }
 
@@ -658,18 +479,16 @@ export function connectCourseToSession(
   sessionId: string,
   courseId: string | null,
 ): LessonSession | null {
-  const existing = db.prepare('SELECT id FROM lesson_sessions WHERE id = ?').get(sessionId);
-  if (!existing) return null;
-  const now = new Date().toISOString();
-  const validCourse = courseId ? getCourse(courseId) : null;
+  const session = sessionsStore.get(sessionId);
+  if (!session) return null;
+
+  const validCourse = courseId ? coursesStore.get(courseId) ?? null : null;
   if (courseId && !validCourse) {
     throw new Error('COURSE_NOT_FOUND');
   }
-  db.prepare('UPDATE lesson_sessions SET course_id = ?, updated_at = ? WHERE id = ?').run(
-    validCourse?.id ?? null,
-    now,
-    sessionId,
-  );
+
+  session.course_id = validCourse?.id ?? null;
+  session.updated_at = new Date().toISOString();
   return getSession(sessionId);
 }
 
@@ -682,80 +501,71 @@ export interface UpsertStepInput {
   highlight?: boolean;
 }
 
-const upsertStepTx = db.transaction((sessionId: string, input: UpsertStepInput) => {
-  const existingSession = db.prepare('SELECT id, title FROM lesson_sessions WHERE id = ?').get(sessionId) as
-    | { id: string; title: string }
-    | undefined;
-  if (!existingSession) {
+export function upsertStep(sessionId: string, input: UpsertStepInput): { step: BoardStep; steps: BoardStep[] } {
+  const session = sessionsStore.get(sessionId);
+  if (!session) {
     throw new Error('SESSION_NOT_FOUND');
   }
 
   const now = new Date().toISOString();
-  const highlightFlag = input.highlight !== false ? 1 : 0;
+  const highlightFlag = input.highlight !== false;
+  const steps = stepsBySessionStore.get(sessionId) ?? [];
 
   let stepNumber = Number(input.step_number);
   if (!Number.isInteger(stepNumber) || stepNumber <= 0) {
-    const maxRow = db
-      .prepare('SELECT COALESCE(MAX(step_number), 0) AS max_step FROM board_steps WHERE session_id = ?')
-      .get(sessionId) as { max_step: number };
-    stepNumber = maxRow.max_step + 1;
+    const maxStep = steps.reduce((max, s) => Math.max(max, s.step_number), 0);
+    stepNumber = maxStep + 1;
   }
 
-  if (highlightFlag === 1) {
-    db.prepare('UPDATE board_steps SET highlight = 0 WHERE session_id = ?').run(sessionId);
+  if (highlightFlag) {
+    for (const s of steps) {
+      s.highlight = false;
+    }
   }
 
   const stepType = normalizeStepType(input.step_type ?? input.type);
   const title = (input.title || `Étape ${stepNumber}`).trim();
   const content = (input.content || '').trim();
 
-  db.prepare(
-    `
-    INSERT INTO board_steps (session_id, step_number, step_type, title, content, highlight, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(session_id, step_number) DO UPDATE SET
-      step_type = excluded.step_type,
-      title = excluded.title,
-      content = excluded.content,
-      highlight = excluded.highlight
-  `,
-  ).run(sessionId, stepNumber, stepType, title, content, highlightFlag, now);
+  let savedStep = steps.find((s) => s.step_number === stepNumber);
+  if (savedStep) {
+    savedStep.step_type = stepType;
+    savedStep.title = title;
+    savedStep.content = content;
+    savedStep.highlight = highlightFlag;
+  } else {
+    savedStep = {
+      id: nextStepId++,
+      session_id: sessionId,
+      step_number: stepNumber,
+      step_type: stepType,
+      title,
+      content,
+      highlight: highlightFlag,
+      created_at: now,
+    };
+    steps.push(savedStep);
+  }
 
-  db.prepare('UPDATE lesson_sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
+  stepsBySessionStore.set(sessionId, steps);
+  session.updated_at = now;
 
-  const savedRow = db
-    .prepare(
-      `SELECT id, session_id, step_number, step_type, title, content, highlight, created_at
-       FROM board_steps
-       WHERE session_id = ? AND step_number = ?`,
-    )
-    .get(sessionId, stepNumber) as RawStepRow;
-
-  const allRows = db
-    .prepare(
-      `SELECT id, session_id, step_number, step_type, title, content, highlight, created_at
-       FROM board_steps
-       WHERE session_id = ?
-       ORDER BY step_number ASC, id ASC`,
-    )
-    .all(sessionId) as RawStepRow[];
+  const sortedSteps = [...steps].sort((a, b) => {
+    if (a.step_number !== b.step_number) return a.step_number - b.step_number;
+    return a.id - b.id;
+  });
 
   return {
-    step: mapStep(savedRow),
-    steps: allRows.map(mapStep),
+    step: cloneStep(savedStep),
+    steps: sortedSteps.map(cloneStep),
   };
-});
-
-export function upsertStep(sessionId: string, input: UpsertStepInput): { step: BoardStep; steps: BoardStep[] } {
-  return upsertStepTx(sessionId, input);
 }
 
 export function clearSessionSteps(sessionId: string): boolean {
-  const existing = db.prepare('SELECT id FROM lesson_sessions WHERE id = ?').get(sessionId);
-  if (!existing) return false;
-  const now = new Date().toISOString();
-  db.prepare('DELETE FROM board_steps WHERE session_id = ?').run(sessionId);
-  db.prepare('UPDATE lesson_sessions SET updated_at = ? WHERE id = ?').run(now, sessionId);
+  const session = sessionsStore.get(sessionId);
+  if (!session) return false;
+  stepsBySessionStore.set(sessionId, []);
+  session.updated_at = new Date().toISOString();
   return true;
 }
 

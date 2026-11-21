@@ -548,7 +548,7 @@ export function TeacherBoard({
                   </>
                 )}
                 <span aria-hidden="true">·</span>
-                <span className="font-mono-code">
+                <span className="font-mono-code tabular-nums">
                   {steps.length === 0
                     ? '0 étape'
                     : viewMode === 'focus'
@@ -626,7 +626,7 @@ export function TeacherBoard({
               type="button"
               onClick={onClearBoard}
               disabled={steps.length === 0}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Eraser className="w-3.5 h-3.5" />
               <span>Effacer le tableau</span>
@@ -658,7 +658,7 @@ export function TeacherBoard({
                 <button
                   type="button"
                   onClick={onRunSimulation}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-stone-900 text-white hover:bg-stone-800 transition-colors whitespace-nowrap cursor-pointer"
+                  className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-stone-900 text-white hover:bg-stone-800 transition-colors whitespace-nowrap cursor-pointer"
                 >
                   <span>Voir le professeur écrire un cours</span>
                 </button>
@@ -699,7 +699,7 @@ export function TeacherBoard({
                     onClick={() => goToStepIndex(currentIndex - 1)}
                     disabled={currentIndex <= 0}
                     aria-label="Étape précédente"
-                    className="p-2 rounded-lg border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-35 transition-colors cursor-pointer"
+                    className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center p-2 rounded-lg border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-35 transition-colors cursor-pointer"
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </button>
@@ -708,7 +708,7 @@ export function TeacherBoard({
                     onClick={() => goToStepIndex(currentIndex + 1)}
                     disabled={currentIndex >= steps.length - 1}
                     aria-label="Étape suivante"
-                    className="p-2 rounded-lg border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-35 transition-colors cursor-pointer"
+                    className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center p-2 rounded-lg border border-stone-300 bg-white text-stone-800 hover:bg-stone-100 disabled:opacity-35 transition-colors cursor-pointer"
                   >
                     <ChevronRight className="w-4 h-4" />
                   </button>
