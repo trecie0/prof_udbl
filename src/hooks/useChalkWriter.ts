@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface LineRevealState {
   chars: number;
@@ -20,6 +20,8 @@ interface UseChalkWriterOptions {
   title: string;
   lines: string[];
   shouldAnimate: boolean;
+  playbackSpeed?: number;
+  isPaused?: boolean;
 }
 
 function prefersReducedMotion(): boolean {
@@ -42,25 +44,33 @@ function buildImmediateState(title: string, lines: string[]): ChalkWritingState 
   };
 }
 
-// Calm, deliberate blackboard handwriting cadence (~28 characters/second) with breathing pauses
-const CHARS_PER_SECOND = 28;
-const TITLE_PAUSE_MS = 350;
-const LINE_PAUSE_MS = 450;
+const CHARS_PER_SECOND = 22;
 
-function computeTitleDurationMs(title: string): number {
-  return Math.max(450, Math.min(2000, (title.length / CHARS_PER_SECOND) * 1000));
+function getPauseDurationMs(speed: number): number {
+  if (speed <= 0.5) return 1400;
+  if (speed < 1) return 1150;
+  return 850;
 }
 
-function computeLineDurationMs(line: string): number {
-  return Math.max(600, Math.min(2600, (line.length / CHARS_PER_SECOND) * 1000));
+function computeTitleDurationMs(title: string, speed: number): number {
+  return Math.max(450, Math.min(4000, (title.length / (CHARS_PER_SECOND * speed)) * 1000));
 }
 
-export function estimateChalkWritingDurationMs(title: string, lines: string[]): number {
+function computeLineDurationMs(line: string, speed: number): number {
+  return Math.max(600, Math.min(5200, (line.length / (CHARS_PER_SECOND * speed)) * 1000));
+}
+
+export function estimateChalkWritingDurationMs(
+  title: string,
+  lines: string[],
+  speed = 0.75,
+): number {
   if (prefersReducedMotion()) return 250;
-  const titleMs = computeTitleDurationMs(title);
+  const safeSpeed = Math.max(0.5, Math.min(1, speed));
+  const titleMs = computeTitleDurationMs(title, safeSpeed);
   if (lines.length === 0) return titleMs;
-  const linesMs = lines.reduce((acc, line) => acc + computeLineDurationMs(line), 0);
-  const pausesMs = TITLE_PAUSE_MS + Math.max(0, lines.length - 1) * LINE_PAUSE_MS;
+  const linesMs = lines.reduce((acc, line) => acc + computeLineDurationMs(line, safeSpeed), 0);
+  const pausesMs = lines.length * getPauseDurationMs(safeSpeed);
   return Math.round(titleMs + linesMs + pausesMs);
 }
 
@@ -69,7 +79,13 @@ export function useChalkWriter({
   title,
   lines,
   shouldAnimate,
+  playbackSpeed = 0.75,
+  isPaused = false,
 }: UseChalkWriterOptions): ChalkWritingState {
+  const playbackSpeedRef = useRef(Math.max(0.5, Math.min(1, playbackSpeed)));
+  const isPausedRef = useRef(isPaused);
+  playbackSpeedRef.current = Math.max(0.5, Math.min(1, playbackSpeed));
+  isPausedRef.current = isPaused;
   const [state, setState] = useState<ChalkWritingState>(() =>
     shouldAnimate && !prefersReducedMotion()
       ? {
@@ -92,8 +108,8 @@ export function useChalkWriter({
     let rafId = 0;
     let lastTime = performance.now();
 
-    const titleDurationMs = computeTitleDurationMs(title);
-    const lineDurationsMs = lines.map((line) => computeLineDurationMs(line));
+    const titleDurationMs = computeTitleDurationMs(title, 1);
+    const lineDurationsMs = lines.map((line) => computeLineDurationMs(line, 1));
 
     let phase: 'title' | 'title_pause' | 'lines' | 'line_pause' | 'done' = 'title';
     let elapsedInPhase = 0;
@@ -111,7 +127,13 @@ export function useChalkWriter({
     const tick = (now: number) => {
       const dt = Math.min(50, now - lastTime);
       lastTime = now;
-      elapsedInPhase += dt;
+      if (isPausedRef.current) {
+        rafId = window.requestAnimationFrame(tick);
+        return;
+      }
+
+      const isPause = phase === 'title_pause' || phase === 'line_pause';
+      elapsedInPhase += dt * (isPause ? 1 : playbackSpeedRef.current);
 
       if (phase === 'title') {
         const progress = Math.min(1, elapsedInPhase / titleDurationMs);
@@ -139,7 +161,7 @@ export function useChalkWriter({
       }
 
       if (phase === 'title_pause') {
-        if (elapsedInPhase >= TITLE_PAUSE_MS) {
+        if (elapsedInPhase >= getPauseDurationMs(playbackSpeedRef.current)) {
           phase = 'lines';
           currentLineIdx = 0;
           elapsedInPhase = 0;
@@ -187,7 +209,7 @@ export function useChalkWriter({
       }
 
       if (phase === 'line_pause') {
-        if (elapsedInPhase >= LINE_PAUSE_MS) {
+        if (elapsedInPhase >= getPauseDurationMs(playbackSpeedRef.current)) {
           currentLineIdx += 1;
           phase = 'lines';
           elapsedInPhase = 0;

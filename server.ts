@@ -32,9 +32,11 @@ import {
   DEFAULT_LIVE_MODEL,
   DEFAULT_VOICE,
   PROFESSOR_SYSTEM_INSTRUCTION,
+  buildPlaybackInstruction,
   buildCourseInstructionContext,
   buildPointToDeclaration,
   buildUpdateBoardDeclaration,
+  normalizePlaybackSpeed,
 } from './server/liveConfig.ts';
 import { analyzeCourseDocument } from './server/pdfAnalyzer.ts';
 
@@ -435,6 +437,7 @@ async function startServer() {
     const requestedSessionId = reqUrl.searchParams.get('sessionId') || '';
     const requestedModel = reqUrl.searchParams.get('model') || DEFAULT_LIVE_MODEL;
     const requestedVoice = reqUrl.searchParams.get('voice') || DEFAULT_VOICE;
+    const playbackSpeed = normalizePlaybackSpeed(reqUrl.searchParams.get('playbackSpeed'));
     const requestedCourseId = reqUrl.searchParams.get('courseId') || '';
     const requestedModuleId = reqUrl.searchParams.get('moduleId') || '';
 
@@ -511,7 +514,7 @@ async function startServer() {
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-          systemInstruction: `${PROFESSOR_SYSTEM_INSTRUCTION}${courseContextPrompt}${existingStepsSummary}`,
+          systemInstruction: `${PROFESSOR_SYSTEM_INSTRUCTION}${buildPlaybackInstruction(playbackSpeed)}${courseContextPrompt}${existingStepsSummary}`,
           tools: [
             {
               functionDeclarations: [
@@ -777,7 +780,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.resolve(process.cwd(), 'dist');
+    const distDir = path.resolve(import.meta.dirname, 'dist');
     app.use(express.static(distDir));
     app.get('/{*splat}', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));

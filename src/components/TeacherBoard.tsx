@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
+import { BoardMotionScene } from './BoardMotionScene.tsx';
 import {
   BookOpen,
   Calculator,
@@ -40,6 +41,11 @@ interface TeacherBoardProps {
   onHighlightStep: (step: BoardStep) => void;
   onRenameSession: (title: string) => void;
   onRunSimulation: () => void;
+  playbackSpeed: number;
+  isBoardPaused: boolean;
+  onChangePlaybackSpeed: (speed: number) => void;
+  onToggleBoardPause: () => void;
+  onSelectLine: (stepNumber: number, lineNumber: number) => void;
 }
 
 const STEP_TYPE_META: Record<
@@ -125,12 +131,20 @@ function StepCanvasSheet({
   shouldAnimate,
   isFocusedMode,
   onSelectStep,
+  playbackSpeed,
+  isBoardPaused,
+  onSelectLine,
+  subject,
 }: {
   step: BoardStep;
   activePointer: BoardPointer | null;
   shouldAnimate: boolean;
   isFocusedMode: boolean;
   onSelectStep?: () => void;
+  playbackSpeed: number;
+  isBoardPaused: boolean;
+  onSelectLine: (stepNumber: number, lineNumber: number) => void;
+  subject?: string;
 }) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [replayCount, setReplayCount] = useState(0);
@@ -154,12 +168,12 @@ function StepCanvasSheet({
     title: step.title,
     lines,
     shouldAnimate: shouldAnimate || replayCount > 0,
+    playbackSpeed,
+    isPaused: isBoardPaused,
   });
 
   const isPointerOnThisStep =
-    !writingState.isWriting &&
-    activePointer !== null &&
-    activePointer.step_number === step.step_number;
+    activePointer !== null && activePointer.step_number === step.step_number;
   const activeLineNumber = isPointerOnThisStep ? activePointer.line_number : null;
 
   // Measure moving black chalk tip while actively writing
@@ -299,62 +313,79 @@ function StepCanvasSheet({
       </div>
 
       {/* Interactive Writing & Explaining Stage */}
-      <div ref={stageRef} className="relative pl-4">
-        {/* Handwritten Chalk Title */}
-        <h3
-          className={`font-handwriting font-bold text-stone-950 pb-2 mb-5 chalk-underline ${
-            isFocusedMode ? 'text-2xl sm:text-3xl' : 'text-xl sm:text-2xl'
-          }`}
-        >
-          <span>{writingState.visibleTitle}</span>
-          {writingState.isWriting && writingState.writingTarget === 'title' && (
-            <span
-              data-chalk-tip="true"
-              aria-hidden="true"
-              className="inline-block w-0.5 h-7 align-middle bg-stone-900/70 ml-0.5"
-            />
-          )}
-        </h3>
-
-        {/* Written Step Lines */}
-        <StepContentRenderer
-          stepType={step.step_type}
-          content={step.content}
-          activeLineNumber={activeLineNumber}
-          writingState={writingState}
-        />
-
-        {/* Animated Black Chalk Nib during active writing */}
-        {chalkCoords.visible && (
-          <div
-            style={{
-              transform: `translate3d(${chalkCoords.x}px, ${chalkCoords.y}px, 0)`,
-            }}
-            className="pointer-events-none absolute top-0 left-0 z-30 transition-transform duration-75 ease-out"
+      <div className={`grid gap-6 ${isFocusedMode ? 'lg:grid-cols-[minmax(0,1.2fr)_minmax(250px,0.8fr)]' : ''}`}>
+        <div ref={stageRef} className="relative min-w-0 pl-4">
+          <h3
+            className={`font-handwriting font-bold text-stone-950 pb-2 mb-5 chalk-underline ${
+              isFocusedMode ? 'text-2xl sm:text-3xl' : 'text-xl sm:text-2xl'
+            }`}
           >
-            <BlackChalkTipSvg />
-          </div>
-        )}
-
-        {/* Professor's Explaining Pointer after writing finishes */}
-        {pointerCoords.visible && (
-          <motion.div
-            aria-live="polite"
-            aria-label={activePointer?.label ? `Curseur du professeur : ${activePointer.label}` : 'Curseur du professeur'}
-            initial={false}
-            animate={{ x: pointerCoords.x, y: pointerCoords.y }}
-            transition={{ type: 'spring', stiffness: 280, damping: 26 }}
-            className="pointer-events-none absolute top-0 left-0 z-20 flex items-center"
-          >
-            <span className="relative flex items-center justify-center">
-              <span className="absolute w-5 h-5 rounded-full bg-rose-500/25 blur-[2px]" />
-              <MousePointer2
-                className="relative w-4 h-4 text-rose-700 fill-rose-600 drop-shadow-[0_2px_4px_rgba(190,18,60,0.45)]"
+            <span>{writingState.visibleTitle}</span>
+            {writingState.isWriting && writingState.writingTarget === 'title' && (
+              <span
+                data-chalk-tip="true"
                 aria-hidden="true"
+                className="inline-block w-0.5 h-7 align-middle bg-stone-900/70 ml-0.5"
               />
-            </span>
-          </motion.div>
-        )}
+            )}
+          </h3>
+
+          <div
+            onClick={(event) => {
+              const target = event.target as HTMLElement;
+              const line = target.closest<HTMLElement>('[data-line-index]');
+              const lineNumber = Number(line?.dataset.lineIndex);
+              if (lineNumber > 0) {
+                event.stopPropagation();
+                onSelectLine(step.step_number, lineNumber);
+              }
+            }}
+          >
+            <StepContentRenderer
+              stepType={step.step_type}
+              content={step.content}
+              activeLineNumber={activeLineNumber}
+              writingState={writingState}
+            />
+          </div>
+
+          {chalkCoords.visible && (
+            <div
+              style={{
+                transform: `translate3d(${chalkCoords.x}px, ${chalkCoords.y}px, 0)`,
+              }}
+              className="pointer-events-none absolute top-0 left-0 z-30 transition-transform duration-75 ease-out"
+            >
+              <BlackChalkTipSvg />
+            </div>
+          )}
+
+          {pointerCoords.visible && (
+            <motion.div
+              aria-live="polite"
+              aria-label={activePointer?.label ? `Curseur du professeur : ${activePointer.label}` : 'Curseur du professeur'}
+              initial={false}
+              animate={{ x: pointerCoords.x, y: pointerCoords.y }}
+              transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+              className="pointer-events-none absolute top-0 left-0 z-20 flex items-center"
+            >
+              <span className="relative flex items-center justify-center">
+                <span className="absolute w-5 h-5 rounded-full bg-rose-500/25 blur-[2px]" />
+                <MousePointer2
+                  className="relative w-4 h-4 text-rose-700 fill-rose-600 drop-shadow-[0_2px_4px_rgba(190,18,60,0.45)]"
+                  aria-hidden="true"
+                />
+              </span>
+            </motion.div>
+          )}
+        </div>
+        <BoardMotionScene
+          step={step}
+          activeLineNumber={activeLineNumber ?? 1}
+          playbackSpeed={playbackSpeed}
+          isPaused={isBoardPaused}
+          subject={subject}
+        />
       </div>
     </article>
   );
@@ -376,6 +407,11 @@ export function TeacherBoard({
   onHighlightStep,
   onRenameSession,
   onRunSimulation,
+  playbackSpeed,
+  isBoardPaused,
+  onChangePlaybackSpeed,
+  onToggleBoardPause,
+  onSelectLine,
 }: TeacherBoardProps) {
   const [viewMode, setViewMode] = useState<'focus' | 'all'>('focus');
   const [filterType, setFilterType] = useState<'all' | StepType>('all');
@@ -634,6 +670,45 @@ export function TeacherBoard({
           </div>
         </div>
 
+        {steps.length > 0 && viewMode === 'focus' && (
+          <div
+            role="group"
+            aria-label="Contrôles du rythme du tableau"
+            className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E4DFD3] bg-white/60 px-5 py-2"
+          >
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="mr-2 text-xs font-semibold text-stone-600">Rythme</span>
+              {[
+                { value: 0.5, label: '0,5× Très lent' },
+                { value: 0.75, label: '0,75× Posé' },
+                { value: 1, label: '1× Normal' },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => onChangePlaybackSpeed(option.value)}
+                  aria-pressed={playbackSpeed === option.value}
+                  className={`min-h-[44px] rounded-lg border px-3 text-xs font-semibold transition-colors cursor-pointer ${
+                    playbackSpeed === option.value
+                      ? 'border-stone-900 bg-stone-900 text-white'
+                      : 'border-stone-300 bg-white text-stone-700 hover:bg-stone-100'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={onToggleBoardPause}
+              aria-pressed={isBoardPaused}
+              className="min-h-[44px] min-w-[112px] rounded-lg border border-stone-300 bg-white px-3 text-xs font-bold text-stone-800 hover:bg-stone-100 cursor-pointer"
+            >
+              {isBoardPaused ? 'Reprendre' : 'Pause'}
+            </button>
+          </div>
+        )}
+
         {/* Whiteboard Writing Canvas */}
         <div className="flex-1 overflow-y-auto p-6 lg:p-10 flex flex-col">
           {isLoading ? (
@@ -722,6 +797,10 @@ export function TeacherBoard({
                   activePointer={activePointer}
                   shouldAnimate={animatedStepSignatures.has(buildStepSignature(focusedStep))}
                   isFocusedMode={true}
+                  playbackSpeed={playbackSpeed}
+                  isBoardPaused={isBoardPaused}
+                  onSelectLine={onSelectLine}
+                  subject={activeCourse?.title}
                 />
               </div>
 
@@ -767,6 +846,10 @@ export function TeacherBoard({
                   activePointer={activePointer}
                   shouldAnimate={animatedStepSignatures.has(buildStepSignature(step))}
                   isFocusedMode={false}
+                  playbackSpeed={playbackSpeed}
+                  isBoardPaused={isBoardPaused}
+                  onSelectLine={onSelectLine}
+                  subject={activeCourse?.title}
                   onSelectStep={() => onHighlightStep(step)}
                 />
               ))}

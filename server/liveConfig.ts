@@ -2,6 +2,28 @@ import { Behavior, Type, type FunctionDeclaration } from '@google/genai';
 import type { CourseItem, LiveModelOption } from '../src/types/board.ts';
 
 export const DEFAULT_LIVE_MODEL = 'gemini-3.8-live';
+export const DEFAULT_PLAYBACK_SPEED = 0.75;
+export const ALLOWED_PLAYBACK_SPEEDS = [0.5, 0.75, 1] as const;
+export type PlaybackSpeed = (typeof ALLOWED_PLAYBACK_SPEEDS)[number];
+
+export function normalizePlaybackSpeed(rawSpeed: string | null): PlaybackSpeed {
+  const parsed = Number(rawSpeed);
+  return ALLOWED_PLAYBACK_SPEEDS.includes(parsed as PlaybackSpeed)
+    ? (parsed as PlaybackSpeed)
+    : DEFAULT_PLAYBACK_SPEED;
+}
+
+export function buildPlaybackInstruction(speed: PlaybackSpeed): string {
+  const pace = {
+    0.5: 'TRÈS LENT (0,5×, environ 10–12 caractères par seconde)',
+    0.75: 'POSÉ (0,75×, environ 15–18 caractères par seconde)',
+    1: 'NORMAL (1×, environ 20–22 caractères par seconde)',
+  }[speed];
+  return `\n\nRYTHME VISUEL SÉLECTIONNÉ : ${pace}.
+Utilise des phrases courtes, une seule idée à la fois, et marque une pause respiratoire entre chaque ligne et avant de passer à l’étape suivante.
+N’enchaîne jamais plusieurs appels update_board sans avoir expliqué l’étape précédente.
+Après avoir écrit, attends que l’étudiant ait le temps de lire avant de déplacer le pointeur.`;
+}
 
 export const AVAILABLE_LIVE_MODELS: LiveModelOption[] = [
   {
